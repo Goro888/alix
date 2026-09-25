@@ -1,6 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // Cloudflare only HOSTS the app. All AI is Google Gemini (your own API key).
+  // Cloudflare only HOSTS the app. The AI runs on your OWN key(s) from almost any
+  // AI company — Gemini, OpenAI, Claude, Grok, DeepSeek, Groq, OpenRouter, Mistral,
+  // Perplexity, Together, Cerebras, Hugging Face, Fireworks (+ any OpenAI-compatible
+  // server). Keys are Secrets (Cloudflare or in-app); these are just model defaults.
   // Your app URL → https://legend-boy.<your-subdomain>.workers.dev
   "name": "alix",
   "main": "src/worker.js",
@@ -29,6 +32,9 @@
 
   // SECRETS — never put them in this file (the repo is public!).
   // Add them in Cloudflare: Worker → Settings → Variables and Secrets → Add → type "Secret"
-  //   GEMINI_API_KEY  (required) your Google AI Studio key
+  //   ANY provider key works: GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, GROQ_API_KEY,
+  //   DEEPSEEK_API_KEY, XAI_API_KEY, MISTRAL_API_KEY, PERPLEXITY_API_KEY, OPENROUTER_API_KEY,
+  //   TOGETHER_API_KEY, CEREBRAS_API_KEY, HUGGINGFACE_API_KEY, FIREWORKS_API_KEY
   //   ACCESS_CODE     (optional) password-lock the app
+  // Keys pasted in the app itself (saved on the phone) work too — no Cloudflare secret needed.
 }

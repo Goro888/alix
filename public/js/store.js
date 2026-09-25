@@ -14,7 +14,8 @@ const defaults = {
   autoSpeak: false,
   greet: true,
   code: "",
-  geminiKey: "", // saved only on this device
+  aiKeys: [], // [{ id, provider, key, model, base, addedAt }] — saved only on this device, used top to bottom
+  activeKeyId: "", // preferred key ("" = automatic, use the list order)
   handsFree: true,
   muted: false,
 };
@@ -44,6 +45,60 @@ export function saveSettings(patch = {}) {
   write(K_SETTINGS, settings);
 }
 
+/* ---------- AI keys (multi-provider) ---------- */
+// One-time migration: the old single `geminiKey` becomes the first entry of the key list.
+try {
+  if (settings.geminiKey) {
+    const legacy = String(settings.geminiKey).trim();
+    if (legacy && !settings.aiKeys.some((k) => k.key === legacy)) {
+      settings.aiKeys.push({ id: uid(), provider: "gemini", key: legacy, model: "", base: "", addedAt: Date.now() });
+    }
+    delete settings.geminiKey;
+    write(K_SETTINGS, settings);
+  }
+  if (!Array.isArray(settings.aiKeys)) { settings.aiKeys = []; write(K_SETTINGS, settings); }
+} catch {}
+
+/** Keys in the order they should be tried (the picked key first). */
+export function orderedAiKeys() {
+  const keys = [...(settings.aiKeys || [])];
+  if (!settings.activeKeyId) return keys;
+  const i = keys.findIndex((k) => k.id === settings.activeKeyId);
+  if (i <= 0) return keys;
+  const [active] = keys.splice(i, 1);
+  return [active, ...keys];
+}
+
+export function addAiKey(entry) {
+  settings.aiKeys = settings.aiKeys.filter((k) => k.key !== entry.key);
+  settings.aiKeys.push(entry);
+  if (!settings.activeKeyId) settings.activeKeyId = entry.id;
+  write(K_SETTINGS, settings);
+}
+
+export function updateAiKey(id, patch) {
+  const k = settings.aiKeys.find((x) => x.id === id);
+  if (!k) return;
+  Object.assign(k, patch);
+  write(K_SETTINGS, settings);
+}
+
+export function removeAiKey(id) {
+  settings.aiKeys = settings.aiKeys.filter((k) => k.id !== id);
+  if (settings.activeKeyId === id) settings.activeKeyId = "";
+  write(K_SETTINGS, settings);
+}
+
+export function moveAiKey(id, dir) {
+  const i = settings.aiKeys.findIndex((k) => k.id === id);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= settings.aiKeys.length) return;
+  const arr = [...settings.aiKeys];
+  [arr[i], arr[j]] = [arr[j], arr[i]];
+  settings.aiKeys = arr;
+  write(K_SETTINGS, settings);
+}
+
 /* ---------- Avatar ---------- */
 export function getAvatar() {
   try {
@@ -63,7 +118,7 @@ export function setAvatar(dataUrl) {
 }
 
 /* ---------- Chats ---------- */
-// chat = { id, title, updated, messages: [{ id, role, content, images:[thumbDataUrl], files:[{name,size,text}], gen?:bool }] }
+// chat = { id, title, updated, messages: [{ id, role, content, images:[thumbDataUrl], files:[{name,size,text}], gen?:bool, via?:{provider,name,model,modelShort} }] }
 let chats = read(K_CHATS, []);
 if (!Array.isArray(chats)) chats = [];
 

@@ -87,7 +87,7 @@ function setStatus(text, cls = "") {
 
 function friendlyErr(e) {
   if (e?.code === "NO_KEY" || e?.code === "BAD_KEY") {
-    setTimeout(() => openKeySheet(e.code === "BAD_KEY" ? "That key didn't work. Paste a valid Gemini key." : ""), 400);
+    setTimeout(() => openKeySheet(e.code === "BAD_KEY" ? "That key didn't work. Paste a valid one — any AI company works." : ""), 400);
     return e.message;
   }
   if (e?.code === "ACCESS_CODE") {
@@ -247,6 +247,9 @@ function fillBubble(bubble, m, streaming = false) {
     html += `<div class="typing"><i></i><i></i><i></i></div>`;
   } else {
     html += `<div class="md">${renderMarkdown(m.content)}</div>`;
+  }
+  if (m.role !== "user" && !streaming && m.via?.name && (m.content || m.error)) {
+    html += `<div class="m-via">⚡ ${escapeHtml(m.via.name)} · ${escapeHtml(m.via.modelShort || m.via.model || "")}</div>`;
   }
   if (m.role !== "user" && !streaming && (m.content || m.error)) {
     const isLast = state.chat?.messages[state.chat.messages.length - 1]?.id === m.id;
@@ -411,9 +414,15 @@ async function runAssistant({ voice = false, onToken } = {}) {
           onToken?.(ev.text, bot.content);
           ss?.push(ev.text);
           if (!raf) raf = requestAnimationFrame(paint);
+        } else if (ev.type === "using") {
+          bot.via = { provider: ev.provider, name: ev.name, model: ev.model, modelShort: ev.modelShort };
+        } else if (ev.type === "reset") {
+          bot.content = ""; // a key failed mid-answer, the next one is starting fresh
+          if (ss) { ss.full = ""; ss.pos = 0; ss.first = true; }
         } else if (ev.type === "error") {
           bot.error = ev.error;
-          if (ev.code === "BAD_KEY") setTimeout(() => openKeySheet("That key didn't work. Paste a valid Gemini key."), 400);
+          bot.failures = ev.failures;
+          if (ev.code === "BAD_KEY" || ev.code === "NO_KEY") setTimeout(() => openKeySheet("That key didn't work. Paste a valid one — any AI company works."), 400);
         }
       },
       controller.signal
@@ -465,7 +474,7 @@ function setBusy(b) {
   state.busy = b;
   $("#composer").classList.toggle("busy", b);
   if (b) setStatus("Thinking…", "busy");
-  else setStatus(state.server?.mock ? "Online · demo mode" : "Online");
+  else renderBrand();
 }
 
 /* ================================================================== */
@@ -1121,76 +1130,327 @@ function closeOverlays() {
   $$(".sheet, .drawer").forEach((s) => (s.hidden = true));
 }
 
-/* ---------- Gemini key ---------- */
-function needsKey() {
-  const h = state.server;
-  return h && !h.mock && !h.keyConfigured && !settings.geminiKey;
+/* ---------- AI keys & models (multi-provider) ---------- */
+// Static fallback so the sheet works even before /api/health answers.
+const PROVIDER_NAMES = {
+  gemini: "Google Gemini", openai: "OpenAI (ChatGPT)", claude: "Claude (Anthropic)",
+  openrouter: "OpenRouter (400+ models)", groq: "Groq (ultra fast)", deepseek: "DeepSeek",
+  grok: "Grok (xAI)", mistral: "Mistral", perplexity: "Perplexity", together: "Together AI",
+  cerebras: "Cerebras (fastest)", huggingface: "Hugging Face", fireworks: "Fireworks AI",
+  custom: "Other (OpenAI-compatible server)",
+};
+const PROVIDER_SHORT = { gemini: "Gemini", openai: "OpenAI", claude: "Claude", openrouter: "OpenRouter", groq: "Groq", deepseek: "DeepSeek", grok: "Grok", mistral: "Mistral", perplexity: "Perplexity", together: "Together", cerebras: "Cerebras", huggingface: "HF", fireworks: "Fireworks", custom: "Custom" };
+const PROVIDER_COLORS = { gemini: "#4285f4", openai: "#10a37f", claude: "#d97757", openrouter: "#6566f1", groq: "#f55036", deepseek: "#4d6bfe", grok: "#e7e9ea", mistral: "#ff7000", perplexity: "#20b8cd", together: "#0f6fff", cerebras: "#f36f21", huggingface: "#ff9d00", fireworks: "#ff4424", custom: "#64748b" };
+const PROVIDER_LETTERS = { gemini: "G", openai: "O", claude: "C", openrouter: "R", groq: "Q", deepseek: "D", grok: "X", mistral: "M", perplexity: "P", together: "T", cerebras: "Cb", huggingface: "🤗", fireworks: "F", custom: "⚙" };
+const PROVIDER_LINKS = { gemini: "https://aistudio.google.com/apikey", openai: "https://platform.openai.com/api-keys", claude: "https://console.anthropic.com/settings/keys", openrouter: "https://openrouter.ai/keys", groq: "https://console.groq.com/keys", deepseek: "https://platform.deepseek.com/api_keys", grok: "https://console.x.ai/", mistral: "https://console.mistral.ai/api-keys", perplexity: "https://www.perplexity.ai/settings/api", together: "https://api.together.ai/settings/api-keys", cerebras: "https://cloud.cerebras.ai/", huggingface: "https://huggingface.co/settings/tokens", fireworks: "https://fireworks.ai/account/api-keys" };
+
+const KEY_PATTERNS = [
+  ["gemini", /^(AQ\.|AIza)[\w.-]{16,}$/],
+  ["claude", /^sk-ant-[\w-]{16,}$/],
+  ["openrouter", /^sk-or-[\w-]{16,}$/],
+  ["groq", /^gsk_[\w-]{16,}$/],
+  ["grok", /^xai-[\w-]{16,}$/],
+  ["huggingface", /^hf_[\w]{16,}$/],
+  ["perplexity", /^pplx-[\w-]{16,}$/],
+  ["cerebras", /^csk-[\w-]{16,}$/],
+  ["fireworks", /^fw_[\w]{16,}$/],
+  ["openai", /^sk-(proj-|svcacct-)?[\w-]{20,}$/],
+];
+function detectProviderShape(k) {
+  for (const [id, re] of KEY_PATTERNS) if (re.test(k)) return id;
+  return null;
 }
 
-function openKeySheet(msg = "") {
-  if (state.server?.keyConfigured && !msg) return;
-  $("#keyInput").value = settings.geminiKey || "";
-  $("#keyMsg").textContent = msg;
-  $("#keyMsg").className = "fine" + (msg ? " err" : "");
+function providerInfo(id) {
+  const srv = (state.server?.providers || []).find((p) => p.id === id);
+  if (srv) return srv;
+  return {
+    id, name: PROVIDER_NAMES[id] || id, short: PROVIDER_SHORT[id] || id,
+    color: PROVIDER_COLORS[id] || "#64748b", letter: PROVIDER_LETTERS[id] || "•",
+    link: PROVIDER_LINKS[id] || "", keyHint: "", custom: id === "custom",
+    caps: {}, defaultModel: "", models: [],
+  };
+}
+function keyMasked(k) { return (k.key || "").length > 8 ? "…" + k.key.slice(-5) : "saved"; }
+function keyModelLabel(k) { return k.model || providerInfo(k.provider).defaultModel || "default"; }
+function shortM(model) { const s = String(model || "").split("/").pop(); return s.length > 26 ? s.slice(0, 25) + "…" : s; }
+
+function needsKey() {
+  const h = state.server;
+  return h && !h.mock && !h.keyConfigured && !(settings.aiKeys || []).length;
+}
+
+function setKeyMsg(text, cls = "") {
+  const el = $("#keyMsg");
+  el.textContent = text;
+  el.className = "fine" + (cls ? " " + cls : "");
+}
+
+function buildProviderOptions() {
+  const ids = Object.keys(PROVIDER_NAMES);
+  const server = new Map((state.server?.providers || []).map((p) => [p.id, p]));
+  $("#keyProvider").innerHTML =
+    `<option value="auto">🔮 Auto-detect from the key</option>` +
+    ids.map((id) => `<option value="${id}">${escapeHtml(server.get(id)?.name || PROVIDER_NAMES[id])}</option>`).join("");
+}
+
+function syncKeyProviderUI() {
+  const sel = $("#keyProvider").value;
+  const isCustom = sel === "custom";
+  $("#keyBaseWrap").hidden = !isCustom;
+  const link = $("#keyGetLink");
+  const p = providerInfo(sel === "auto" ? "gemini" : sel);
+  if (sel === "auto") {
+    link.href = "https://aistudio.google.com/apikey";
+    link.textContent = "Don't have a key? Get a free Gemini one →";
+    link.style.display = "";
+  } else if (p.link) {
+    link.href = p.link;
+    link.textContent = `Get a ${p.name.split(" (")[0]} key →`;
+    link.style.display = "";
+  } else {
+    link.style.display = "none";
+  }
+  $("#keyDetect").textContent = isCustom ? "Works with any server that speaks the OpenAI API (LM Studio, Ollama, vLLM…)." : "";
+}
+
+function detectHint() {
+  const typed = $("#keyInput").value.trim();
+  const manual = $("#keyProvider").value;
+  let hint = "";
+  if (typed.length >= 10) {
+    const det = detectProviderShape(typed);
+    if (manual === "auto") hint = det ? `Looks like: ${providerInfo(det).name}` : "Not recognised — pick the company in the list above.";
+    else if (det && det !== manual) hint = `⚠️ This key looks like ${providerInfo(det).name}, but the list says ${providerInfo(manual).name}.`;
+  }
+  if (hint) $("#keyDetect").textContent = hint;
+  else if ($("#keyProvider").value !== "custom") $("#keyDetect").textContent = "";
+}
+
+function openKeySheet(msg = "", preset = {}) {
+  buildProviderOptions();
+  $("#keyProvider").value = preset.provider || "auto";
+  syncKeyProviderUI();
+  $("#keyInput").value = "";
+  $("#keyModel").value = "";
+  $("#keyBase").value = preset.base || "";
+  setKeyMsg(msg, msg ? "err" : "");
   openSheet("keySheet");
   setTimeout(() => $("#keyInput").focus(), 300);
 }
 
-async function saveGeminiKey(key, msgEl) {
-  key = (key || "").trim().replace(/\s+/g, "");
-  if (key.length < 20) {
-    msgEl.textContent = "That doesn't look like a Gemini key.";
-    msgEl.className = msgEl.className.replace(/ ?(ok|err)/g, "") + " err";
-    return false;
-  }
-  msgEl.textContent = "Checking your key…";
-  msgEl.className = msgEl.className.replace(/ ?(ok|err)/g, "");
+/** Verify + store the key from the Add-key sheet. */
+async function saveAiKeyFromSheet() {
+  const btn = $("#keySave");
+  let providerSel = $("#keyProvider").value;
+  const key = $("#keyInput").value.trim().replace(/\s+/g, "");
+  const base = $("#keyBase").value.trim();
+  const model = $("#keyModel").value.trim();
+
+  if (providerSel !== "custom" && key.length < 10) { setKeyMsg("That key looks too short — paste the whole key.", "err"); return false; }
+  if (providerSel === "custom" && !/^https?:\/\/.+/.test(base)) { setKeyMsg("For a custom server, paste its address too (https://…/v1).", "err"); return false; }
+  const provider = providerSel === "auto" ? "" : providerSel;
+
+  btn.disabled = true;
+  setKeyMsg("Checking your key…", "");
   try {
-    const r = await api.verifyKey(key);
+    const r = await api.verifyKey({ key, provider, base });
     if (!r.ok) {
-      msgEl.textContent = "❌ " + (r.error || "Key rejected");
-      msgEl.className += " err";
+      if (r.code === "UNKNOWN_KEY") setKeyMsg("❌ Not recognised — pick the company in the list and try again.", "err");
+      else setKeyMsg("❌ " + (r.error || "Key rejected"), "err");
       return false;
     }
-    saveSettings({ geminiKey: key });
-    msgEl.textContent = "✅ Connected to Gemini!";
-    msgEl.className += " ok";
-    updateKeyHint();
-    $("#setInfo").textContent = $("#setInfo").textContent.replace(/^🔑 Add your Gemini key to start · /, "");
+    const entry = { id: store.uid(), provider: r.provider, key, model, base: r.provider === "custom" ? base : "", addedAt: Date.now() };
+    store.addAiKey(entry);
+    setKeyMsg(`✅ Connected to ${r.name}!`, "ok");
+    renderKeysSettings();
+    renderBrand();
+    checkServer(); // refresh voices/features for this provider
     return true;
   } catch (e) {
-    msgEl.textContent = "❌ " + friendlyErr(e);
-    msgEl.className += " err";
+    setKeyMsg("❌ " + friendlyErr(e), "err");
     return false;
+  } finally {
+    btn.disabled = false;
   }
 }
 
-function updateKeyHint() {
-  const el = $("#setKeyHint");
-  if (!el) return;
+/* ---------- Model picker ---------- */
+const modelPicker = { onPick: null, models: [], current: "" };
+
+function curatedToModels(list) {
+  return (list || []).map((s) => {
+    const [id, ...rest] = String(s).split(" — ");
+    return { id: id.trim(), label: rest.join(" — ").trim() };
+  });
+}
+
+async function openModelSheet({ provider, key = "", base = "", current = "", onPick }) {
+  const p = providerInfo(provider);
+  modelPicker.onPick = onPick;
+  modelPicker.current = current || "";
+  modelPicker.models = curatedToModels(p.models);
+  $("#modelTitle").textContent = `${p.name} — choose a model`;
+  $("#modelSearch").value = modelPicker.current;
+  $("#modelNote").textContent = key ? "Loading the live model list…" : "Built-in suggestions — add the key to load the full live list.";
+  renderModelList();
+  openSheet("modelSheet");
+  setTimeout(() => $("#modelSearch").focus(), 250);
+  const r = await api.listModels({ provider, key, base });
+  if (r.ok && r.models?.length) {
+    modelPicker.models = r.models;
+    $("#modelNote").textContent = r.live ? `${r.models.length} models, live from ${p.short}. Tap one or type your own.` : "Live list unreachable — showing built-in suggestions.";
+    renderModelList();
+  }
+}
+
+function renderModelList() {
+  const q = $("#modelSearch").value.trim().toLowerCase();
+  const list = (modelPicker.models || [])
+    .filter((m) => !q || m.id.toLowerCase().includes(q) || (m.label || "").toLowerCase().includes(q))
+    .slice(0, 300);
+  const el = $("#modelList");
+  el.innerHTML = list.length
+    ? list.map((m) => `<button class="model-item ${m.id === modelPicker.current ? "active" : ""}" data-m="${escapeHtml(m.id)}" type="button">
+        <strong>${escapeHtml(m.id)}</strong>${m.label ? `<small>${escapeHtml(m.label)}</small>` : ""}</button>`).join("")
+    : `<div class="empty">No matches — the name you typed is used as-is.</div>`;
+  $$(".model-item", el).forEach((b) => (b.onclick = () => { $("#modelSearch").value = b.dataset.m; $("#modelSearch").focus(); }));
+}
+
+/* ---------- Keys list in Settings ---------- */
+function renderKeysSettings() {
+  const wrap = $("#keysList");
+  if (!wrap) return;
+  const keys = settings.aiKeys || [];
+  updateServerNote();
+  if (!keys.length) {
+    wrap.innerHTML = `<div class="empty">No keys yet. Add one — Gemini has a free tier.</div>`;
+    return;
+  }
+  wrap.innerHTML = keys.map((k, i) => {
+    const p = providerInfo(k.provider);
+    return `<div class="key-row" data-id="${k.id}">
+      <span class="key-ic" style="background:${p.color}22;color:${p.color}">${escapeHtml(p.letter)}</span>
+      <div class="key-meta">
+        <strong>${escapeHtml(p.short)} <small>${escapeHtml(keyMasked(k))}</small></strong>
+        <button class="key-model" data-model="${k.id}" type="button">📦 ${escapeHtml(shortM(keyModelLabel(k)))} <b>Change ▾</b></button>
+      </div>
+      <div class="key-tools">
+        <button data-up="${k.id}" ${i === 0 ? "disabled" : ""} aria-label="Move up" type="button">↑</button>
+        <button data-down="${k.id}" ${i === keys.length - 1 ? "disabled" : ""} aria-label="Move down" type="button">↓</button>
+        <button data-del="${k.id}" aria-label="Remove" type="button">✕</button>
+      </div>
+    </div>`;
+  }).join("");
+  $$("[data-del]", wrap).forEach((b) => (b.onclick = () => { store.removeAiKey(b.dataset.del); renderKeysSettings(); renderBrand(); checkServer(); toast("Key removed"); }));
+  $$("[data-up]", wrap).forEach((b) => (b.onclick = () => { store.moveAiKey(b.dataset.up, -1); renderKeysSettings(); renderBrand(); }));
+  $$("[data-down]", wrap).forEach((b) => (b.onclick = () => { store.moveAiKey(b.dataset.down, 1); renderKeysSettings(); renderBrand(); }));
+  $$("[data-model]", wrap).forEach((b) => (b.onclick = () => {
+    const k = (settings.aiKeys || []).find((x) => x.id === b.dataset.model);
+    if (!k) return;
+    openModelSheet({
+      provider: k.provider, key: k.key, base: k.base, current: k.model,
+      onPick: (m) => {
+        store.updateAiKey(k.id, { model: m });
+        renderKeysSettings();
+        renderBrand();
+        toast(m ? `Model: ${shortM(m)}` : "Using the company default model");
+      },
+    });
+  }));
+}
+
+function updateServerNote() {
+  const note = $("#keysServerNote");
+  if (!note) return;
   const h = state.server;
-  if (h?.keyConfigured) { el.textContent = "✅ A key is already saved on Cloudflare — this field is optional."; el.className = "hint ok"; }
-  else if (settings.geminiKey) { el.textContent = "✅ Key saved on this phone."; el.className = "hint ok"; }
-  else { el.textContent = "Needed unless GEMINI_API_KEY is set on Cloudflare."; el.className = "hint"; }
+  if (h?.keyConfigured) {
+    note.textContent = `✅ ${h.serverEntries.length} key(s) saved on Cloudflare — tried first: ${h.serverEntries.map((e) => `${e.name} · ${e.modelShort}`).join(", ")}. Keys below are used after.`;
+    note.className = "hint ok";
+  } else if ((settings.aiKeys || []).length) {
+    note.textContent = "Saved only on this phone, tried top to bottom — if one fails, the next answers.";
+    note.className = "hint";
+  } else {
+    note.textContent = "No key yet. Any company works — Gemini has a free tier. You can also save a Secret (e.g. GEMINI_API_KEY) on Cloudflare.";
+    note.className = "hint";
+  }
+}
+
+/* ---------- Quick AI switcher (tap the name at the top) ---------- */
+function topEntryLabel() {
+  if (state.server?.mock) return { text: "Online · demo mode", none: false };
+  const keys = settings.aiKeys || [];
+  const active = settings.activeKeyId ? keys.find((k) => k.id === settings.activeKeyId) : null;
+  const labelFor = (k) => `${providerInfo(k.provider).short} · ${shortM(keyModelLabel(k))}`;
+  if (active) return { text: labelFor(active), none: false };
+  if (state.server?.serverEntries?.length) {
+    const e = state.server.serverEntries[0];
+    return { text: keys.length ? `Auto · ${e.name}` : `${e.name} · ${e.modelShort}`, none: false };
+  }
+  if (keys.length) return { text: settings.activeKeyId ? labelFor(keys.find((k) => k.id === settings.activeKeyId) || keys[0]) : labelFor(keys[0]), none: false };
+  if (!state.server) return { text: "Online", none: false };
+  return { text: "Add a key to start", none: true };
+}
+
+function renderBrand() {
+  const el = $("#statusText");
+  const { text, none } = topEntryLabel();
+  el.className = "status" + (none ? " none" : "");
+  el.innerHTML = `<i class="dot"></i>${escapeHtml(text)}`;
+}
+
+function openSwitchSheet() {
+  const h = state.server;
+  if (topEntryLabel().none && h && !h.keyConfigured) return openKeySheet();
+  const wrap = $("#switchList");
+  const rows = [];
+  rows.push(`<button class="switch-item ${!settings.activeKeyId ? "active" : ""}" data-id="auto" type="button">
+    <span class="sw-ic">✨</span><span class="sw-meta"><strong>Auto — best available</strong><small>keys in order, the first one that works answers</small></span><span class="sw-check">✓</span></button>`);
+  for (const e of h?.serverEntries || []) {
+    rows.push(`<div class="switch-item static"><span class="sw-ic">☁️</span><span class="sw-meta"><strong>${escapeHtml(e.name)} · ${escapeHtml(e.modelShort)}</strong><small>saved on Cloudflare — answers first</small></span></div>`);
+  }
+  for (const k of settings.aiKeys || []) {
+    const p = providerInfo(k.provider);
+    rows.push(`<button class="switch-item ${settings.activeKeyId === k.id ? "active" : ""}" data-id="${k.id}" type="button">
+      <span class="sw-ic" style="background:${p.color}22;color:${p.color}">${escapeHtml(p.letter)}</span>
+      <span class="sw-meta"><strong>${escapeHtml(p.short)} · ${escapeHtml(shortM(keyModelLabel(k)))}</strong><small>${escapeHtml(keyMasked(k))}</small></span><span class="sw-check">✓</span></button>`);
+  }
+  wrap.innerHTML = rows.join("");
+  $$("[data-id]", wrap).forEach((b) => (b.onclick = () => {
+    saveSettings({ activeKeyId: b.dataset.id === "auto" ? "" : b.dataset.id });
+    closeOverlays();
+    renderBrand();
+    vibrate();
+  }));
+  openSheet("switchSheet");
 }
 
 function initKey() {
   $("#keySave").onclick = async () => {
-    const btn = $("#keySave");
-    btn.disabled = true;
-    const ok = await saveGeminiKey($("#keyInput").value, $("#keyMsg"));
-    btn.disabled = false;
+    const ok = await saveAiKeyFromSheet();
     if (ok) {
-      setTimeout(closeOverlays, 900);
-      toast("Legend Boy is connected ✅");
+      setTimeout(closeOverlays, 800);
+      toast("Key added ✅ — Legend Boy can answer now");
     }
   };
   $("#keyInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#keySave").click(); });
-  $("#setGeminiKey").onchange = async (e) => {
-    const v = e.target.value.trim();
-    if (!v) { saveSettings({ geminiKey: "" }); updateKeyHint(); return; }
-    await saveGeminiKey(v, $("#setKeyHint"));
+  $("#keyInput").addEventListener("input", detectHint);
+  $("#keyProvider").onchange = () => { syncKeyProviderUI(); detectHint(); };
+  $("#keyBrowse").onclick = () => {
+    const sel = $("#keyProvider").value;
+    const provider = sel === "auto" ? detectProviderShape($("#keyInput").value.trim()) || "gemini" : sel;
+    openModelSheet({
+      provider,
+      key: $("#keyInput").value.trim(),
+      base: $("#keyBase").value.trim(),
+      current: $("#keyModel").value.trim(),
+      onPick: (m) => { $("#keyModel").value = m; },
+    });
   };
+  $("#modelUse").onclick = () => { modelPicker.onPick?.($("#modelSearch").value.trim()); closeOverlays(); };
+  $("#modelReset").onclick = () => { modelPicker.onPick?.(""); closeOverlays(); };
+  $("#modelSearch").addEventListener("input", renderModelList);
+  $("#modelSearch").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#modelUse").click(); });
 }
 
 function openSettings(focusCode = false) {
@@ -1201,32 +1461,38 @@ function openSettings(focusCode = false) {
   $("#setAutoSpeak").checked = settings.autoSpeak;
   $("#setGreet").checked = settings.greet;
   $("#setCode").value = settings.code;
-  $("#setGeminiKey").value = settings.geminiKey || "";
-  updateKeyHint();
-  $("#setSpeakerWrap").hidden = settings.engine !== "cloud";
+  renderKeysSettings();
+  $("#setSpeakerWrap").hidden = settings.engine !== "cloud" || !$("#setSpeaker").options.length;
   $("#setAvatarImg").src = store.getAvatar();
   openSheet("settingsSheet");
   if (focusCode) setTimeout(() => $("#setCode").focus(), 300);
 }
 
-const GEMINI_VOICES = {
-  Puck: "m", Charon: "m", Fenrir: "m", Orus: "m", Enceladus: "m", Iapetus: "m", Umbriel: "m", Algieba: "m",
-  Algenib: "m", Rasalgethi: "m", Alnilam: "m", Schedar: "m", Achird: "m", Zubenelgenubi: "m", Sadachbia: "m", Sadaltager: "m",
-  Zephyr: "f", Kore: "f", Leda: "f", Aoede: "f", Callirrhoe: "f", Autonoe: "f", Despina: "f", Erinome: "f",
-  Laomedeia: "f", Achernar: "f", Gacrux: "f", Pulcherrima: "f", Vindemiatrix: "f", Sulafat: "f",
-};
-
-function populateSpeakers(list, genders = GEMINI_VOICES, def = "Puck") {
-  const all = list?.length ? list : Object.keys(GEMINI_VOICES);
+function populateSpeakers(list, genders = {}, def = "") {
+  const cloudOption = $('#setEngine option[value="cloud"]');
+  if (!list?.length) {
+    // None of the current keys can make a cloud voice — the phone's own voice is used.
+    cloudOption?.setAttribute("disabled", "");
+    if (settings.engine === "cloud") saveSettings({ engine: "device" });
+    $("#setSpeaker").innerHTML = "";
+    $("#setSpeakerWrap").hidden = true;
+    return;
+  }
+  cloudOption?.removeAttribute("disabled");
+  const all = list;
   if (!all.includes(settings.speaker)) saveSettings({ speaker: all.includes(def) ? def : all[0] });
   $("#setSpeaker").innerHTML = all
     .map((s) => `<option value="${s}">${s}${genders[s] === "f" ? " (female)" : " (male)"}${s === def ? " — default" : ""}</option>`)
     .join("");
   $("#setSpeaker").value = settings.speaker;
+  $("#setSpeakerWrap").hidden = settings.engine !== "cloud";
 }
 
 function initSettings() {
   $("#btnSettings").onclick = () => openSettings();
+  $("#brandBtn").onclick = () => { if (state.view !== "chat") showView("chat"); openSwitchSheet(); };
+  $("#keysAdd").onclick = () => openKeySheet();
+  $("#switchManage").onclick = () => { closeOverlays(); openSettings(); };
   $("#setName").onchange = (e) => saveSettings({ name: e.target.value.trim() });
   $("#setEngine").onchange = (e) => {
     saveSettings({ engine: e.target.value });
@@ -1311,18 +1577,19 @@ async function checkServer() {
     const h = await api.health();
     state.server = h;
     populateSpeakers(h.speakers, h.voiceGenders, h.defaultSpeaker);
-    setBusy(state.busy);
-    const info = [`AI: Google Gemini (${h.models?.chat || "?"})`, `Search: Google`];
-    if (h.mock) info.unshift("⚠️ Demo mode (fake answers)");
-    else if (!h.keyConfigured && !settings.geminiKey) info.unshift("🔑 Add your Gemini key to start");
-    updateKeyHint();
-    maybeAskKey();
+    renderBrand();
+    const nKeys = (h.serverEntries?.length || 0) + (settings.aiKeys || []).length;
+    const info = h.mock
+      ? ["⚠️ Demo mode (fake answers)"]
+      : [nKeys ? `🔑 ${nKeys} key(s) ready` : "🔑 Add an AI key to start (any company)"];
+    info.push(`Search: ${h.searchMode === "google" ? "Google grounded" : h.searchMode === "perplexity" ? "Perplexity" : h.searchMode === "free" ? "free web search" : "web"}`);
     $("#setInfo").textContent = info.join(" · ");
+    updateServerNote();
+    maybeAskKey();
     $("#setCodeWrap").hidden = !h.accessCodeRequired;
     if (h.accessCodeRequired && !settings.code) setTimeout(() => toast("Enter your access code in Settings ⚙️", 4000), 1200);
   } catch {
     setStatus("Offline", "offline");
-    populateSpeakers();
   }
 }
 
