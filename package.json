@@ -1,0 +1,36 @@
+{
+  "name": "alix",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Legend Boy — a mobile AI assistant (chat, voice, camera, files, research) powered by Google Gemini, hosted on Cloudflare Workers",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --ip 0.0.0.0",
+    "dev:demo": "wrangler dev -c wrangler.demo.jsonc --ip 0.0.0.0",
+    "deploy": "node scripts/deploy.mjs",
+    "login": "wrangler login",
+    "check": "wrangler deploy --dry-run --outdir .wrangler/dry"
+  },
+  "devDependencies": {
+    "wrangler": "^4.139.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "GEMINI_API_KEY": {
+        "description": "Your Google Gemini API key. Get one free at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) (new keys start with `AQ.`). Saved as an encrypted **Secret**. You can also leave it empty and paste the key inside the app later."
+      },
+      "GEMINI_MODEL": {
+        "description": "Gemini model for chat, photos, research and voice. `gemini-flash-latest` always uses Google's newest Flash model."
+      },
+      "GEMINI_TTS_MODEL": {
+        "description": "Gemini text-to-speech model for Legend Boy's voice."
+      },
+      "TTS_SPEAKER": {
+        "description": "Default voice, e.g. `Puck`, `Charon`, `Fenrir`, `Kore`."
+      },
+      "GEMINI_IMAGE_MODEL": {
+        "description": "Gemini image model for the Create image feature."
+      }
+    }
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Cloudflare only HOSTS the app. All AI is Google Gemini (your own API key).
+  // Your app URL → https://legend-boy.<your-subdomain>.workers.dev
+  "name": "alix",
+  "main": "src/worker.js",
+  "compatibility_date": "2025-09-01",
+
+  // The phone web app (HTML/CSS/JS/images)
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+
+  "observability": { "enabled": true },
+
+  "vars": {
+    // Gemini model for chat, photos, research and voice transcription.
+    // "gemini-flash-latest" always uses Google's newest Flash model.
+    // Other options: "gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash"
+    "GEMINI_MODEL": "gemini-flash-latest",
+    // Voice (text-to-speech) model and default voice
+    "GEMINI_TTS_MODEL": "gemini-3.8-flash-lite-tts",
+    "TTS_SPEAKER": "Puck",
+    // Image creation model ("Nano Banana")
+    "GEMINI_IMAGE_MODEL": "gemini-3.1-flash-lite-image"
+  }
+
+  // SECRETS — never put them in this file (the repo is public!).
+  // Add them in Cloudflare: Worker → Settings → Variables and Secrets → Add → type "Secret"
+  //   GEMINI_API_KEY  (required) your Google AI Studio key
+  //   ACCESS_CODE     (optional) password-lock the app
+}
