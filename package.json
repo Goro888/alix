@@ -2,7 +2,7 @@
   "name": "alix",
   "version": "1.0.0",
   "private": true,
-  "description": "Legend Boy — a mobile AI assistant (chat, voice, camera, files, research) powered by Google Gemini, hosted on Cloudflare Workers",
+  "description": "Legend Boy — a mobile AI assistant (chat, voice, camera, files, research) that works with almost any AI company (Gemini, OpenAI, Claude, Grok, DeepSeek, Groq, OpenRouter, Mistral, Perplexity, Together, Cerebras, Hugging Face, Fireworks…), hosted on Cloudflare Workers",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --ip 0.0.0.0",
@@ -17,16 +17,16 @@
   "cloudflare": {
     "bindings": {
       "GEMINI_API_KEY": {
-        "description": "Your Google Gemini API key. Get one free at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) (new keys start with `AQ.`). Saved as an encrypted **Secret**. You can also leave it empty and paste the key inside the app later."
+        "description": "An API key from ANY AI company — Google Gemini (free tier at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)) is the easy start, but OpenAI, Claude, Grok, DeepSeek, Groq, OpenRouter, Mistral, Perplexity and others work too. Saved as an encrypted **Secret**. You can also leave it empty and paste a key inside the app later."
       },
       "GEMINI_MODEL": {
         "description": "Gemini model for chat, photos, research and voice. `gemini-flash-latest` always uses Google's newest Flash model."
       },
       "GEMINI_TTS_MODEL": {
-        "description": "Gemini text-to-speech model for Legend Boy's voice."
+        "description": "Gemini text-to-speech model for Legend Boy's HD voice (OpenAI keys use their own TTS automatically)."
       },
       "TTS_SPEAKER": {
-        "description": "Default voice, e.g. `Puck`, `Charon`, `Fenrir`, `Kore`."
+        "description": "Default voice, e.g. `Puck`, `Charon`, `Fenrir`, `Kore` (Gemini) or `alloy`, `nova`, `onyx` (OpenAI)."
       },
       "GEMINI_IMAGE_MODEL": {
         "description": "Gemini image model for the Create image feature."

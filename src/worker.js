@@ -1,112 +1,99 @@
 /**
- * Legend Boy — AI assistant backend (Cloudflare Worker, powered by Google Gemini)
+ * Legend Boy — AI assistant backend (Cloudflare Worker, works with almost any AI company)
  *
- * Cloudflare only HOSTS the app. All AI runs on the Gemini API with your own key:
- *   GEMINI_API_KEY  (secret, required)  → set in Cloudflare: Worker → Settings → Variables and Secrets
- *   GEMINI_MODEL    (var, optional)     → chat / vision / research / transcription model
+ * Cloudflare only HOSTS the app. All AI runs on the provider APIs with your own keys.
+ * Keys can come from two places (both are tried in order, with automatic failover):
+ *   1. Cloudflare secrets — e.g. GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, GROQ_API_KEY,
+ *      DEEPSEEK_API_KEY, XAI_API_KEY, MISTRAL_API_KEY, PERPLEXITY_API_KEY, OPENROUTER_API_KEY,
+ *      TOGETHER_API_KEY, CEREBRAS_API_KEY, HUGGINGFACE_API_KEY, FIREWORKS_API_KEY
+ *      (Worker → Settings → Variables and Secrets). Any key pasted under a wrong-looking
+ *      name is still detected by its shape.
+ *   2. Keys pasted in the app (saved only on the phone) — sent in the x-ai-keys header.
  *
  * Routes
- *   GET  /api/health       status + feature flags
+ *   GET  /api/health       status, providers, voices, feature flags
  *   POST /api/chat         streamed chat (text + photos + files)             → SSE
- *   POST /api/research     Google-Search-grounded research with citations    → SSE
+ *   POST /api/research     web research with citations                       → SSE
  *   POST /api/transcribe   voice → text (multipart "audio")                  → JSON
- *   POST /api/tts          text → voice (JSON {text, speaker})               → audio/wav
+ *   POST /api/tts          text → voice (JSON {text, speaker})               → audio/*
  *   POST /api/extract      document → text (multipart "file")                → JSON
  *   POST /api/imagine      text → image (JSON {prompt})                      → JSON
+ *   POST /api/verify       check one API key (JSON {key, provider?, base?})  → JSON
+ *   POST /api/models       model list for the picker (JSON {provider, key?}) → JSON
  */
 
-const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta";
-
-const DEFAULTS = {
-  chat: "gemini-flash-latest", // always points to Google's newest Flash model
-  tts: "gemini-3.8-flash-lite-tts",
-  image: "gemini-3.1-flash-lite-image",
-  voice: "Puck",
-};
-
-// Gemini prebuilt voices (m = masculine, f = feminine)
-const VOICES = {
-  Puck: "m", Charon: "m", Fenrir: "m", Orus: "m", Enceladus: "m", Iapetus: "m", Umbriel: "m",
-  Algieba: "m", Algenib: "m", Rasalgethi: "m", Alnilam: "m", Schedar: "m", Achird: "m",
-  Zubenelgenubi: "m", Sadachbia: "m", Sadaltager: "m",
-  Zephyr: "f", Kore: "f", Leda: "f", Aoede: "f", Callirrhoe: "f", Autonoe: "f", Despina: "f",
-  Erinome: "f", Laomedeia: "f", Achernar: "f", Gacrux: "f", Pulcherrima: "f", Vindemiatrix: "f", Sulafat: "f",
-};
+import {
+  PROVIDERS, PROVIDER_BY_ID, GEMINI_VOICES, OPENAI_VOICES,
+  cleanKey, detectProvider, shortModel, chatModelOf, selectChain, buildEntries,
+  listModels, streamChat, generateOnce, transcribeAudio, ttsAudio, generateImage,
+  toBase64, ProviderError,
+} from "./providers.js";
 
 const MAX_HISTORY = 30;
 const MAX_FILE_CHARS = 60000;
 const MAX_MSG_CHARS = 20000;
 
+const ENV_IMAGE_MODEL = { gemini: "GEMINI_IMAGE_MODEL", openai: "OPENAI_IMAGE_MODEL", grok: "XAI_IMAGE_MODEL", together: "TOGETHER_IMAGE_MODEL" };
+const ENV_TTS_MODEL = { gemini: "GEMINI_TTS_MODEL", openai: "OPENAI_TTS_MODEL" };
+
+/* ==================================================================== */
+/* Routing                                                               */
+/* ==================================================================== */
+
 export default {
   async fetch(request, rawEnv) {
     const url = new URL(request.url);
-    // Key priority: Cloudflare secret GEMINI_API_KEY → key saved in the app on the user's phone.
-    const env = withKey(rawEnv, request);
+    const env = { ...rawEnv };
     if (!url.pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders() });
 
     try {
-      if (url.pathname === "/api/health") return health(env);
+      if (url.pathname === "/api/health") return health(env, request);
       if (!checkAccess(request, env)) return json({ error: "Access code required", code: "ACCESS_CODE" }, 401);
       if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
-      if (!isMock(env) && !env.GEMINI_API_KEY) {
-        return json({
-          error: "Legend Boy needs your Gemini API key. Paste it in Settings ⚙️ (it's saved only on this phone), or add a Secret named GEMINI_API_KEY in Cloudflare.",
-          code: "NO_KEY",
-        }, 500);
-      }
+
+      // Build the key chain for this request (Cloudflare secrets → app keys).
+      env.__legacyKey = request.headers.get("x-gemini-key") || "";
+      const entries = buildEntries(env, parseKeysHeader(request));
 
       switch (url.pathname) {
-        case "/api/chat": return await handleChat(request, env);
-        case "/api/research": return await handleResearch(request, env);
-        case "/api/transcribe": return await handleTranscribe(request, env);
-        case "/api/tts": return await handleTTS(request, env);
-        case "/api/extract": return await handleExtract(request, env);
-        case "/api/imagine": return await handleImagine(request, env);
-        case "/api/verify": return await handleVerify(env);
+        case "/api/chat": return await handleChat(request, env, entries);
+        case "/api/research": return await handleResearch(request, env, entries);
+        case "/api/transcribe": return await handleTranscribe(request, env, entries);
+        case "/api/tts": return await handleTTS(request, env, entries);
+        case "/api/extract": return await handleExtract(request, env, entries);
+        case "/api/imagine": return await handleImagine(request, env, entries);
+        case "/api/verify": return await handleVerify(request, env, entries);
+        case "/api/models": return await handleModels(request, env, entries);
         default: return json({ error: "Not found" }, 404);
       }
     } catch (err) {
       console.error(err);
-      return json({ error: friendlyError(err), code: errorCode(err) }, err?.status && err.status < 600 ? err.status : 500);
+      return json({ error: friendlyError(err), code: errorCode(err), failures: err?.failures }, err?.status && err.status < 600 && err.status >= 400 ? err.status : 500);
     }
   },
 };
 
-/* ------------------------------------------------------------------ */
-/* Helpers                                                             */
-/* ------------------------------------------------------------------ */
-
-function cleanKey(k) {
-  const v = String(k || "").trim();
-  // ignore empty values and placeholders like "your_key_here"
-  if (v.length < 20 || /your|xxx|placeholder|example/i.test(v)) return "";
-  return v;
-}
-
-const looksLikeKey = (v) => /^(AQ\.|AIza)[\w.-]{20,}$/.test(String(v || "").trim());
-const MODEL_VARS = ["GEMINI_MODEL", "GEMINI_TTS_MODEL", "GEMINI_IMAGE_MODEL", "TTS_SPEAKER"];
-
-function withKey(env, request) {
-  env = { ...env };
-  // If the key was pasted into a model/voice variable by mistake, use it as the key
-  // and fall back to the default model for that variable.
-  let strayKey = "";
-  for (const n of MODEL_VARS) {
-    if (looksLikeKey(env[n])) { strayKey = strayKey || String(env[n]).trim(); delete env[n]; }
+function parseKeysHeader(request) {
+  const raw = request.headers.get("x-ai-keys");
+  if (!raw) return [];
+  try {
+    const j = JSON.parse(raw);
+    const list = Array.isArray(j) ? j : j.keys;
+    return (Array.isArray(list) ? list : []).slice(0, 30).map((k) => ({
+      provider: String(k?.provider || "").slice(0, 30),
+      key: String(k?.key || "").slice(0, 300),
+      model: String(k?.model || "").slice(0, 120),
+      base: String(k?.base || "").slice(0, 300),
+    }));
+  } catch {
+    return [];
   }
-  const serverKey = cleanKey(env.GEMINI_API_KEY) || strayKey;
-  const appKey = cleanKey(request.headers.get("x-gemini-key"));
-  return { ...env, GEMINI_API_KEY: serverKey || appKey, SERVER_KEY: Boolean(serverKey) };
 }
 
-function models(env) {
-  return {
-    chat: env.GEMINI_MODEL || DEFAULTS.chat,
-    tts: env.GEMINI_TTS_MODEL || DEFAULTS.tts,
-    image: env.GEMINI_IMAGE_MODEL || DEFAULTS.image,
-  };
-}
+/* ==================================================================== */
+/* Helpers                                                              */
+/* ==================================================================== */
 
 function isMock(env) {
   return env.MOCK_AI === "1" || env.MOCK_AI === "true";
@@ -116,7 +103,7 @@ function corsHeaders() {
   return {
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "GET,POST,OPTIONS",
-    "access-control-allow-headers": "content-type,x-access-code",
+    "access-control-allow-headers": "content-type,x-access-code,x-ai-keys,x-gemini-key",
   };
 }
 
@@ -137,58 +124,201 @@ function checkAccess(request, env) {
   return diff === 0;
 }
 
-class GeminiError extends Error {
-  constructor(message, status) {
-    super(message);
-    this.status = status;
-  }
+const NO_KEY_ERROR =
+  "Legend Boy needs an API key from an AI company to answer. Tap Settings ⚙️ → AI keys & models and paste one (Gemini has a free tier), or add a Secret like GEMINI_API_KEY in Cloudflare.";
+
+function noKeyResponse() {
+  return json({ error: NO_KEY_ERROR, code: "NO_KEY" }, 500);
+}
+
+function needsEntries(env, entries) {
+  return isMock(env) || entries.length > 0;
 }
 
 function friendlyError(err) {
   const msg = String(err?.message || err || "Unknown error");
   const s = err?.status;
-  if (s === 429 || /RESOURCE_EXHAUSTED|quota/i.test(msg)) return "Gemini limit reached for now (free tier). Wait a minute and try again. (" + msg.slice(0, 200) + ")";
-  if (s === 401 || s === 403 || /API key|PERMISSION_DENIED|UNAUTHENTICATED/i.test(msg)) return "Gemini rejected the API key — check it in Settings ⚙️ (or the GEMINI_API_KEY secret on Cloudflare). (" + msg.slice(0, 200) + ")";
-  if (s === 404 || /not found|is not supported/i.test(msg)) return "Gemini model not available: " + msg.slice(0, 240);
-  return msg;
+  const who = err?.provider ? `${PROVIDER_BY_ID[err.provider]?.short || err.provider}: ` : "";
+  if (err?.failures?.length) return err.message;
+  if (s === 429 || /RESOURCE_EXHAUSTED|rate.?limit|quota/i.test(msg)) return `${who}limit reached (out of credit or too many requests). Tried every key. (${msg.slice(0, 180)})`;
+  if (s === 401 || s === 403 || /API key|invalid.*key|PERMISSION_DENIED|UNAUTHENTICATED|Unauthorized/i.test(msg)) return `${who}rejected the API key — check it in Settings ⚙️. (${msg.slice(0, 180)})`;
+  if (s === 404 || /model.*not (found|available)|does not exist/i.test(msg)) return `${who}model not available: ${msg.slice(0, 220)}`;
+  return who + msg;
 }
 
 function errorCode(err) {
   const msg = String(err?.message || "");
-  if (/API key|API_KEY_INVALID|UNAUTHENTICATED|PERMISSION_DENIED/i.test(msg) || err?.status === 401 || err?.status === 403) return "BAD_KEY";
+  if (err?.failures) return err.failures.some((f) => /429|limit|quota/i.test(f.error)) ? "RATE_LIMIT" : "ALL_FAILED";
+  if (/API key|API_KEY_INVALID|UNAUTHENTICATED|PERMISSION_DENIED|Unauthorized/i.test(msg) || err?.status === 401 || err?.status === 403) return "BAD_KEY";
   if (err?.status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(msg)) return "RATE_LIMIT";
+  if (err?.code === "NO_CAP") return "NO_CAP";
   return undefined;
 }
 
-/** Check that the Gemini key works (used by the app's "Connect Gemini" screen). */
-async function handleVerify(env) {
-  if (isMock(env)) return json({ ok: true, mock: true });
-  const res = await fetch(`${GEMINI_BASE}/models?pageSize=50`, { headers: { "x-goog-api-key": env.GEMINI_API_KEY } });
-  if (!res.ok) {
-    const err = new GeminiError(extractGeminiError(await res.text()), res.status);
-    return json({ ok: false, error: friendlyError(err), code: errorCode(err) || "BAD_KEY" }, 400);
-  }
-  const data = await res.json().catch(() => ({}));
-  const names = (data.models || []).map((m) => String(m.name || "").replace("models/", ""));
-  return json({ ok: true, server: Boolean(env.SERVER_KEY), models: names.slice(0, 50) });
+/** Aggregate error after every key in the chain failed. */
+function allFailed(failures) {
+  const list = failures.slice(0, 6).map((f) => `• ${f.where}: ${f.error}`).join("\n");
+  const err = new Error(
+    `Every saved key failed:\n${list}${failures.length > 6 ? `\n• …and ${failures.length - 6} more` : ""}`
+  );
+  err.failures = failures;
+  return err;
 }
 
-function health(env) {
+/** Error when a feature needs a capability no key has. */
+function capError(cap) {
+  const messages = {
+    vision: "To look at photos, add a key from a company whose AI can see: Google Gemini, OpenAI, Claude, Groq, OpenRouter, Grok, Mistral, Together or Fireworks (Settings ⚙️).",
+    stt: "Voice typing works with a key from: Google Gemini, OpenAI, Groq, Mistral or Fireworks. Add one in Settings ⚙️ — or just type your message.",
+    images: "Creating images works with a key from: Google Gemini, OpenAI, Grok (xAI) or Together. Add one in Settings ⚙️.",
+  };
+  const err = new Error(messages[cap] || "No saved key can do this.");
+  err.code = "NO_CAP";
+  err.status = 422;
+  return err;
+}
+
+function entryLabel(entry) {
+  const p = PROVIDER_BY_ID[entry.provider];
+  return `${p?.short || entry.provider} · ${shortModel(chatModelOf(entry) || "default")}`;
+}
+
+/* ==================================================================== */
+/* Key verification + model lists                                       */
+/* ==================================================================== */
+
+function curatedList(providerId) {
+  const p = PROVIDER_BY_ID[providerId];
+  return (p?.models || []).map((s) => {
+    const [id, ...rest] = s.split(" — ");
+    return { id: id.trim(), label: rest.join(" — ").trim() };
+  });
+}
+
+async function verifyEntry(entry) {
+  const models = await listModels(entry);
+  return models;
+}
+
+/** POST /api/verify {key, provider?, base?} — check one key (used by "Add key" in the app). */
+async function handleVerify(request, env) {
+  if (isMock(env)) return json({ ok: true, mock: true, provider: "gemini", name: "Google Gemini", models: ["gemini-flash-latest"] });
+  const body = await request.json().catch(() => ({}));
+  const key = cleanKey(body.key) || String(body.key || "").trim();
+  const base = String(body.base || "").trim().replace(/\/+$/, "");
+  let providerId = PROVIDER_BY_ID[body.provider] ? body.provider : "";
+  if (!providerId) providerId = detectProvider(key) || (base ? "custom" : "");
+  if (!providerId) {
+    return json({
+      ok: false,
+      error: "That key isn't recognised. Pick the company yourself in the Company list, then save again.",
+      code: "UNKNOWN_KEY",
+    }, 400);
+  }
+  if (providerId === "custom" && !/^https?:\/\//.test(base)) {
+    return json({ ok: false, error: "For a custom server, paste its address too (https://…/v1).", code: "NO_BASE" }, 400);
+  }
+  if (providerId !== "custom" && key.length < 10) {
+    return json({ ok: false, error: "That key looks too short — paste the whole key.", code: "BAD_KEY" }, 400);
+  }
+  const p = PROVIDER_BY_ID[providerId];
+  const entry = { id: `${providerId}#verify`, provider: providerId, key, model: "", base: base || String(env[p.baseEnv] || "").trim() || p.base, server: false };
+  try {
+    const live = await verifyEntry(entry);
+    const curated = curatedList(providerId).map((c) => c.id);
+    const models = [...new Set([...curated, ...live])].slice(0, 400);
+    return json({
+      ok: true,
+      provider: providerId,
+      name: p.name,
+      detected: !PROVIDER_BY_ID[body.provider],
+      caps: p.caps,
+      defaultModel: p.defaults.chat || models[0] || "",
+      models,
+    });
+  } catch (e) {
+    console.warn("verify failed", e);
+    return json({ ok: false, provider: providerId, name: p.name, error: friendlyError(new ProviderError(e.message, e.status, providerId)), code: errorCode(e) || "BAD_KEY" }, 400);
+  }
+}
+
+/** POST /api/models {provider, key?, base?} — feed the model picker. */
+async function handleModels(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const providerId = PROVIDER_BY_ID[body.provider] ? body.provider : "";
+  if (!providerId) return json({ models: [], error: "Unknown provider" }, 400);
+  const p = PROVIDER_BY_ID[providerId];
+  const curated = curatedList(providerId);
+  const key = String(body.key || "").trim();
+  const base = String(body.base || "").trim().replace(/\/+$/, "");
+  let live = [];
+  if (key || (providerId === "custom" && base)) {
+    try {
+      live = await listModels({ id: `${providerId}#list`, provider: providerId, key, model: "", base: base || String(env[p.baseEnv] || "").trim() || p.base, server: false });
+    } catch (e) {
+      console.warn("model list failed", e.message);
+    }
+  }
+  const seen = new Set();
+  const models = [];
+  for (const c of curated) { if (!seen.has(c.id)) { seen.add(c.id); models.push(c); } }
+  for (const id of live) { if (!seen.has(id)) { seen.add(id); models.push({ id, label: "" }); } }
+  if (isMock(env) && !models.length) models.push({ id: "demo-model", label: "Demo" });
+  return json({ ok: true, models: models.slice(0, 500), live: live.length > 0 });
+}
+
+/* ==================================================================== */
+/* Health                                                               */
+/* ==================================================================== */
+
+function health(env, request) {
+  const mock = isMock(env);
+  env.__legacyKey = request.headers.get("x-gemini-key") || "";
+  const entries = buildEntries(env, parseKeysHeader(request));
+  const serverEntries = entries.filter((e) => e.server);
+
+  const ttsEntry = selectChain(entries, { tts: true })[0];
+  let speakers = [];
+  let voiceGenders = {};
+  let defaultSpeaker = "";
+  if (ttsEntry?.provider === "gemini") {
+    voiceGenders = GEMINI_VOICES;
+    speakers = Object.keys(GEMINI_VOICES);
+    defaultSpeaker = GEMINI_VOICES[env.TTS_SPEAKER] ? env.TTS_SPEAKER : PROVIDER_BY_ID.gemini.defaults.voice;
+  } else if (ttsEntry?.provider === "openai") {
+    voiceGenders = OPENAI_VOICES;
+    speakers = Object.keys(OPENAI_VOICES);
+    defaultSpeaker = OPENAI_VOICES[env.TTS_SPEAKER] ? env.TTS_SPEAKER : PROVIDER_BY_ID.openai.defaults.voice;
+  }
+
   return json({
     ok: true,
     name: "Legend Boy",
-    provider: "gemini",
-    mock: isMock(env),
-    keyConfigured: Boolean(env.SERVER_KEY), // key saved on Cloudflare
-    appKeyAccepted: Boolean(env.GEMINI_API_KEY && !env.SERVER_KEY),
+    version: 2,
+    mock,
+    keyConfigured: serverEntries.length > 0,
+    appKeyAccepted: entries.some((e) => !e.server),
     accessCodeRequired: Boolean((env.ACCESS_CODE || "").trim()),
-    webSearch: "google",
-    models: models(env),
-    speakers: Object.keys(VOICES),
-    voiceGenders: VOICES,
-    defaultSpeaker: env.TTS_SPEAKER && VOICES[env.TTS_SPEAKER] ? env.TTS_SPEAKER : DEFAULTS.voice,
+    serverEntries: serverEntries.map((e) => ({ provider: e.provider, name: PROVIDER_BY_ID[e.provider].short, model: chatModelOf(e), modelShort: shortModel(chatModelOf(e)) })),
+    providers: PROVIDERS.map((p) => ({
+      id: p.id, name: p.name, short: p.short, letter: p.letter, color: p.color,
+      link: p.link, keyHint: p.keyHint, custom: Boolean(p.custom),
+      caps: p.caps, defaultModel: p.defaults.chat || "",
+      models: p.models.slice(0, 8),
+    })),
+    speakers,
+    voiceGenders,
+    defaultSpeaker,
+    tts: Boolean(ttsEntry),
+    searchMode: selectChain(entries, { researchSearch: true })[0]
+      ? (PROVIDER_BY_ID[selectChain(entries, { researchSearch: true })[0].provider].caps.search === "grounded" ? "google" : "perplexity")
+      : "free",
   });
 }
+
+/* ==================================================================== */
+/* Prompts + conversation building                                      */
+/* ==================================================================== */
 
 function todayString() {
   return new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
@@ -216,15 +346,14 @@ function parseDataUrl(url) {
   return m ? { mimeType: m[1], data: m[2] } : null;
 }
 
-/** Convert the client conversation into Gemini `contents`. */
-function buildContents(clientMessages) {
+/** Convert the client conversation into normalized messages (role, text, images[]). */
+function normalizeMessages(clientMessages) {
   const msgs = Array.isArray(clientMessages) ? clientMessages.slice(-MAX_HISTORY) : [];
 
-  // Only the most recent message that carries images keeps them (fast + small requests).
   let lastImageIdx = -1;
   msgs.forEach((m, i) => { if (m?.role === "user" && Array.isArray(m.images) && m.images.length) lastImageIdx = i; });
 
-  const contents = [];
+  const out = [];
   msgs.forEach((m, i) => {
     if (!m || (m.role !== "user" && m.role !== "assistant")) return;
     let text = String(m.content || "").slice(0, MAX_MSG_CHARS);
@@ -235,105 +364,19 @@ function buildContents(clientMessages) {
         .join("");
     }
     const images = Array.isArray(m.images) ? m.images.map(parseDataUrl).filter(Boolean) : [];
-    const parts = [];
     if (m.role === "user" && i === lastImageIdx && images.length) {
-      images.slice(0, 6).forEach((img) => parts.push({ inlineData: img }));
-      parts.push({ text: text || "What do you see in this image?" });
+      out.push({ role: "user", text: text || "What do you see in this image?", images: images.slice(0, 6) });
     } else {
       if (m.role === "user" && images.length) text = `[shared ${images.length} photo(s) earlier] ` + text;
-      parts.push({ text: text.trim() ? text : m.role === "user" ? "(empty)" : "…" });
+      out.push({ role: m.role, text: text.trim() ? text : m.role === "user" ? "(empty)" : "…", images: [] });
     }
-    const role = m.role === "assistant" ? "model" : "user";
-    // Gemini prefers alternating roles — merge consecutive same-role turns.
-    const prev = contents[contents.length - 1];
-    if (prev && prev.role === role) prev.parts.push(...parts);
-    else contents.push({ role, parts });
   });
-
-  if (!contents.length || contents[contents.length - 1].role !== "user") contents.push({ role: "user", parts: [{ text: "Continue." }] });
-  if (contents[0].role !== "user") contents.unshift({ role: "user", parts: [{ text: "Hi" }] });
-  return contents;
+  return out;
 }
 
-/* ------------------------------------------------------------------ */
-/* Gemini API                                                          */
-/* ------------------------------------------------------------------ */
-
-async function geminiFetch(env, model, method, body, { stream = false, signal } = {}) {
-  const url = `${GEMINI_BASE}/models/${encodeURIComponent(model)}:${method}${stream ? "?alt=sse" : ""}`;
-  const send = (b) =>
-    fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
-      body: JSON.stringify(b),
-      signal,
-    });
-
-  let res = await send(body);
-  // Older models don't know `thinkingConfig.thinkingLevel` — retry once without it.
-  if (res.status === 400 && body.generationConfig?.thinkingConfig) {
-    const text = await res.text();
-    if (/thinking/i.test(text)) {
-      const b2 = { ...body, generationConfig: { ...body.generationConfig } };
-      delete b2.generationConfig.thinkingConfig;
-      res = await send(b2);
-    } else {
-      throw new GeminiError(extractGeminiError(text), 400);
-    }
-  }
-  if (!res.ok) throw new GeminiError(extractGeminiError(await res.text()), res.status);
-  return res;
-}
-
-function extractGeminiError(text) {
-  try {
-    const j = JSON.parse(text);
-    const e = Array.isArray(j) ? j[0]?.error : j.error;
-    return e?.message || text.slice(0, 300);
-  } catch {
-    return text.slice(0, 300);
-  }
-}
-
-/** Iterate over parsed JSON chunks of a Gemini SSE stream. */
-async function* geminiEvents(res) {
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let idx;
-    while ((idx = buffer.indexOf("\n")) >= 0) {
-      const line = buffer.slice(0, idx).trim();
-      buffer = buffer.slice(idx + 1);
-      if (!line.startsWith("data:")) continue;
-      const payload = line.slice(5).trim();
-      if (!payload || payload === "[DONE]") continue;
-      try { yield JSON.parse(payload); } catch {}
-    }
-  }
-  const rest = buffer.trim();
-  if (rest.startsWith("data:")) { try { yield JSON.parse(rest.slice(5).trim()); } catch {} }
-}
-
-function chunkText(ev) {
-  const parts = ev?.candidates?.[0]?.content?.parts || [];
-  return parts.filter((p) => typeof p.text === "string" && !p.thought).map((p) => p.text).join("");
-}
-
-function responseText(j) {
-  return (j?.candidates?.[0]?.content?.parts || []).filter((p) => p.text && !p.thought).map((p) => p.text).join("");
-}
-
-function blockedReason(ev) {
-  const fb = ev?.promptFeedback?.blockReason;
-  const fr = ev?.candidates?.[0]?.finishReason;
-  if (fb) return `Request blocked by Gemini safety filters (${fb}).`;
-  if (fr && /SAFETY|PROHIBITED|BLOCKLIST|SPII/.test(fr)) return `Answer stopped by Gemini safety filters (${fr}).`;
-  return null;
-}
+/* ==================================================================== */
+/* SSE + failover engine                                                */
+/* ==================================================================== */
 
 /** Create an SSE response and give the caller a `send(obj)` function. */
 function sseStream(run) {
@@ -350,7 +393,7 @@ function sseStream(run) {
       await run(send);
     } catch (err) {
       console.error(err);
-      await send({ type: "error", error: friendlyError(err), code: errorCode(err) });
+      await send({ type: "error", error: friendlyError(err), code: errorCode(err), failures: err?.failures?.slice(0, 6) });
     } finally {
       await send({ type: "done" });
       closed = true;
@@ -367,160 +410,182 @@ async function mockStream(send, text) {
     await send({ type: "token", text: word });
     await new Promise((r) => setTimeout(r, 10));
   }
-  return { text, grounding: null };
+  return { text };
 }
 
 /**
- * Stream a Gemini answer, forwarding tokens. Returns {text, grounding}.
+ * Stream a chat answer from the whole key chain with automatic failover.
+ * Emits `using` events so the app can show "⚡ Claude · claude-sonnet-5".
  */
-async function streamGemini(env, send, { system, contents, tools, fast = false }) {
-  if (isMock(env)) {
-    const last = contents[contents.length - 1];
-    const lastText = last.parts.filter((p) => p.text).map((p) => p.text).join(" ");
-    const hasImage = last.parts.some((p) => p.inlineData);
-    return mockStream(send,
-      `**Demo mode** is on (no Gemini key used in local dev).\n\n` +
-      (hasImage ? `I received your photo 📸 — once deployed I'll describe it for real.\n\n` : "") +
-      `You said: _"${lastText.slice(0, 160).replace(/\n/g, " ")}"_\n\nAdd your **GEMINI_API_KEY** secret on Cloudflare and I'll answer for real. 🚀`);
-  }
-
-  const body = {
-    systemInstruction: { parts: [{ text: system }] },
-    contents,
-    generationConfig: { maxOutputTokens: 8192 },
-    safetySettings: [
-      { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_ONLY_HIGH" },
-      { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_ONLY_HIGH" },
-      { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-      { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-    ],
-  };
-  if (fast) body.generationConfig.thinkingConfig = { thinkingLevel: "low" };
-  if (tools) body.tools = tools;
-
-  const res = await geminiFetch(env, models(env).chat, "streamGenerateContent", body, { stream: true });
-  let full = "";
-  let grounding = null;
-  let blocked = null;
-  for await (const ev of geminiEvents(res)) {
-    const t = chunkText(ev);
-    if (t) {
-      full += t;
-      await send({ type: "token", text: t });
+async function runChain(entries, args, send, { needs = {}, onEntry } = {}) {
+  const chain = selectChain(entries, needs);
+  const capName = Object.keys(needs).find((k) => needs[k]);
+  if (!chain.length) throw capError(capName || "chat");
+  const failures = [];
+  for (const entry of chain) {
+    await send({ type: "using", provider: entry.provider, name: PROVIDER_BY_ID[entry.provider]?.short || entry.provider, model: chatModelOf(entry), modelShort: shortModel(chatModelOf(entry)) });
+    if (onEntry) onEntry(entry);
+    let streamed = false;
+    try {
+      const r = await streamChat(entry, args, async (t) => {
+        streamed = true;
+        await send({ type: "token", text: t });
+      });
+      if (!r.text && !streamed) throw new ProviderError("Empty answer", 0, entry.provider);
+      r.via = { provider: entry.provider, model: chatModelOf(entry) };
+      r.failures = failures;
+      return r;
+    } catch (e) {
+      if (e?.name === "AbortError") throw e;
+      console.warn(`entry failed: ${entryLabel(entry)}`, e?.message);
+      failures.push({ where: entryLabel(entry), error: String(e?.message || e).slice(0, 200) });
+      if (streamed) await send({ type: "reset" });
     }
-    const gm = ev?.candidates?.[0]?.groundingMetadata;
-    if (gm) grounding = mergeGrounding(grounding, gm);
-    blocked = blockedReason(ev) || blocked;
   }
-  if (!full && blocked) throw new Error(blocked);
-  return { text: full, grounding };
+  throw allFailed(failures);
 }
 
-function mergeGrounding(a, b) {
-  if (!a) return { ...b };
-  return {
-    webSearchQueries: [...new Set([...(a.webSearchQueries || []), ...(b.webSearchQueries || [])])],
-    groundingChunks: b.groundingChunks?.length ? b.groundingChunks : a.groundingChunks,
-    groundingSupports: [...(a.groundingSupports || []), ...(b.groundingSupports || [])],
-  };
-}
+/* ==================================================================== */
+/* Chat                                                                 */
+/* ==================================================================== */
 
-async function generateOnce(env, { system, parts, fast = true, config = {} }, model) {
-  const body = {
-    contents: [{ role: "user", parts }],
-    generationConfig: { ...config },
-  };
-  if (system) body.systemInstruction = { parts: [{ text: system }] };
-  if (fast) body.generationConfig.thinkingConfig = { thinkingLevel: "low" };
-  const res = await geminiFetch(env, model || models(env).chat, "generateContent", body);
-  return res.json();
-}
-
-function toBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-  return btoa(binary);
-}
-
-function fromBase64(b64) {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-/* ------------------------------------------------------------------ */
-/* Chat                                                                */
-/* ------------------------------------------------------------------ */
-
-async function handleChat(request, env) {
+async function handleChat(request, env, entries) {
   const body = await request.json().catch(() => ({}));
   const voice = Boolean(body.voice);
-  const contents = buildContents(body.messages);
-  return sseStream(async (send) => {
-    await streamGemini(env, send, {
-      system: systemPrompt(body.userName) + (voice ? VOICE_ADDON : ""),
-      contents,
-      fast: voice,
+  const messages = normalizeMessages(body.messages);
+  const hasImages = messages.some((m) => m.images?.length);
+
+  if (isMock(env)) {
+    return sseStream(async (send) => {
+      const last = messages[messages.length - 1];
+      await send({ type: "using", provider: "demo", name: "Demo", model: "demo", modelShort: "demo" });
+      await mockStream(send,
+        `**Demo mode** is on (no AI key used). \n\n` +
+        (hasImages ? `I received your photo 📸 — once a key is added I'll describe it for real.\n\n` : "") +
+        `You said: _"${String(last?.text || "").slice(0, 160).replace(/\n/g, " ")}"_\n\nAdd any AI key in **Settings ⚙️ → AI keys & models** and I'll answer for real. 🚀`);
     });
-  });
+  }
+  if (!entries.length) return noKeyResponse();
+
+  return sseStream((send) =>
+    runChain(entries, {
+      system: systemPrompt(body.userName) + (voice ? VOICE_ADDON : ""),
+      messages,
+      maxTokens: 8192,
+      fast: voice,
+    }, send, { needs: hasImages ? { vision: true } : {} })
+  );
 }
 
-/* ------------------------------------------------------------------ */
-/* Research (Google Search grounding, with free-search fallback)       */
-/* ------------------------------------------------------------------ */
+/* ==================================================================== */
+/* Research                                                             */
+/* ==================================================================== */
 
-async function handleResearch(request, env) {
+async function handleResearch(request, env, entries) {
   const body = await request.json().catch(() => ({}));
   const query = String(body.query || "").trim().slice(0, 800);
   const deep = body.depth === "deep";
   if (!query) return json({ error: "Please enter a research topic." }, 400);
-
-  const system = researchSystem(deep, true);
+  if (isMock(env)) {
+    return sseStream(async (send) => {
+      await send({ type: "status", step: "search", text: "Searching the web…" });
+      await send({ type: "queries", queries: [query] });
+      await send({ type: "sources", sources: [{ n: 1, title: "Demo source", url: "https://example.com", snippet: "" }] });
+      await mockStream(send, `**TL;DR** — this is a demo report about _${query}_.\n\n## Details\nAdd an AI key to run real research with live sources. 🚀\n\n## Key takeaways\n- Demo mode is on`);
+    });
+  }
+  if (!entries.length) return noKeyResponse();
 
   return sseStream(async (send) => {
-    await send({ type: "status", step: "search", text: "Searching Google…" });
+    const failures = [];
 
-    let result;
-    try {
-      // Stream the report live, then add citations once grounding info arrives.
-      let started = false;
-      result = await streamGemini(env, async (ev) => {
-        if (ev.type === "token" && !started) {
-          started = true;
-          await send({ type: "status", step: "write", text: "Writing your report…" });
+    // 1) Gemini key → Google Search grounding with citations
+    const grounded = entries.filter((e) => PROVIDER_BY_ID[e.provider]?.caps.search === "grounded");
+    for (const entry of grounded) {
+      await send({ type: "status", step: "search", text: "Searching Google…" });
+      await send({ type: "using", provider: entry.provider, name: PROVIDER_BY_ID.gemini.short, model: chatModelOf(entry), modelShort: shortModel(chatModelOf(entry)) });
+      let streamed = false;
+      try {
+        let started = false;
+        const result = await streamChat(entry, {
+          system: researchSystem(deep, true),
+          messages: [{ role: "user", text: `Research question: ${query}`, images: [] }],
+          maxTokens: 8192,
+          tools: [{ google_search: {} }],
+        }, async (t) => {
+          streamed = true;
+          if (!started) { started = true; await send({ type: "status", step: "write", text: "Writing your report…" }); }
+          await send({ type: "token", text: t });
+        });
+        if (!result.text && !streamed) throw new ProviderError("Empty report", 0, entry.provider);
+        const g = result.grounding;
+        if (g?.webSearchQueries?.length) await send({ type: "queries", queries: g.webSearchQueries });
+        const chunks = (g?.groundingChunks || []).filter((c) => c.web?.uri);
+        const sources = chunks.map((c, i) => ({ n: i + 1, title: c.web.title || c.web.domain || "Source", url: c.web.uri, snippet: "" }));
+        if (sources.length) {
+          await send({ type: "sources", sources });
+          const cited = addCitations(result.text, g.groundingSupports || [], chunks.length);
+          if (cited !== result.text) await send({ type: "replace", text: cited });
         }
-        await send(ev);
-      }, {
-        system,
-        contents: [{ role: "user", parts: [{ text: `Research question: ${query}` }] }],
-        tools: [{ google_search: {} }],
-      });
-    } catch (e) {
-      console.warn("grounded research failed, falling back", e);
-      await send({ type: "status", step: "fallback", text: "Google Search unavailable — using backup search…" });
-      await send({ type: "reset" });
-      return fallbackResearch(env, send, query, deep);
+        return;
+      } catch (e) {
+        console.warn("grounded research failed", e?.message);
+        failures.push({ where: entryLabel(entry), error: String(e?.message || e).slice(0, 200) });
+        if (streamed) await send({ type: "reset" });
+      }
     }
 
-    const g = result.grounding;
-    if (g?.webSearchQueries?.length) await send({ type: "queries", queries: g.webSearchQueries });
-    const chunks = (g?.groundingChunks || []).filter((c) => c.web?.uri);
-    const sources = chunks.map((c, i) => ({ n: i + 1, title: c.web.title || c.web.domain || "Source", url: c.web.uri, snippet: "" }));
-    if (sources.length) {
-      await send({ type: "sources", sources });
-      const cited = addCitations(result.text, g.groundingSupports || [], chunks.length);
-      if (cited !== result.text) await send({ type: "replace", text: cited });
+    // 2) Perplexity key → its own live web search
+    const native = entries.filter((e) => PROVIDER_BY_ID[e.provider]?.caps.search === "native");
+    for (const entry of native) {
+      await send({ type: "status", step: "search", text: "Searching the web with Perplexity…" });
+      await send({ type: "using", provider: entry.provider, name: PROVIDER_BY_ID.perplexity.short, model: chatModelOf(entry), modelShort: shortModel(chatModelOf(entry)) });
+      try {
+        const model = chatModelOf(entry);
+        const researchModel = deep && model === "sonar" ? "sonar-pro" : model;
+        const res = await fetch(`${entry.base}/chat/completions`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${entry.key}` },
+          body: JSON.stringify({
+            model: researchModel,
+            messages: [
+              { role: "system", content: researchSystem(deep, true) },
+              { role: "user", content: `Research question: ${query}` },
+            ],
+            stream: false,
+          }),
+        });
+        if (!res.ok) throw new ProviderError((await res.text()).slice(0, 200), res.status, entry.provider);
+        const j = await res.json().catch(() => ({}));
+        const text = j?.choices?.[0]?.message?.content || "";
+        if (!text) throw new ProviderError("Empty report", 0, entry.provider);
+        const citations = (j.citations || j.search_results?.map((r) => r.url) || []).slice(0, 12);
+        if (citations.length) {
+          await send({ type: "sources", sources: citations.map((url, i) => ({ n: i + 1, title: hostOf(url), url, snippet: "" })) });
+        }
+        await send({ type: "token", text });
+        return;
+      } catch (e) {
+        console.warn("perplexity research failed", e?.message);
+        failures.push({ where: entryLabel(entry), error: String(e?.message || e).slice(0, 200) });
+      }
     }
+
+    // 3) Any key → free web search + report
+    await send({ type: "status", step: "fallback", text: grounded.length || native.length ? "Built-in search — using backup web search…" : "Searching the web…" });
+    await fallbackResearch(entries, send, query, deep);
   });
+}
+
+function hostOf(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return "Source"; }
 }
 
 function researchSystem(deep, grounded) {
   return (
     `You are Legend Boy, an expert research assistant. Today is ${todayString()}.\n` +
     (grounded
-      ? `Research the question using Google Search (run several different searches${deep ? ", at least 5, covering different angles" : ""}) and write a ${deep ? "thorough, detailed" : "clear, concise"} report in Markdown.\n`
+      ? `Research the question using live web search${deep ? " (run at least 5 searches covering different angles)" : ""} and write a ${deep ? "thorough, detailed" : "clear, concise"} report in Markdown.\n`
       : `Write a ${deep ? "thorough, detailed" : "clear, concise"} research report in Markdown using the numbered sources provided. Cite facts inline like [1] or [2][3].\n`) +
     `Rules:\n- Start with a short **TL;DR**.\n- Use ## headings and bullet points.\n- Include concrete facts, numbers, dates and names.\n` +
     `- If sources disagree or info may be outdated, say so.\n- End with "## Key takeaways".\n- Do NOT write a sources list or raw URLs (the app shows sources).\n- Reply in the same language as the question.`
@@ -554,10 +619,9 @@ function addCitations(text, supports, nChunks) {
   return out;
 }
 
-async function fallbackResearch(env, send, query, deep) {
-  const queries = [query];
-  await send({ type: "queries", queries });
-  const results = (await Promise.all(queries.map((q) => freeSearch(q).catch(() => [])))).flat();
+async function fallbackResearch(entries, send, query, deep) {
+  await send({ type: "queries", queries: [query] });
+  const results = await freeSearch(query).catch(() => []);
   const seen = new Set();
   const sources = [];
   for (const r of results) {
@@ -575,13 +639,14 @@ async function fallbackResearch(env, send, query, deep) {
   const context = top.length
     ? top.map((s, i) => `[${i + 1}] ${s.title}\nURL: ${s.url}\n${(s.content || s.snippet || "").slice(0, 4000)}`).join("\n\n---\n\n")
     : "(No web results found. Answer from your own knowledge and clearly say live sources were unavailable.)";
-  await streamGemini(env, send, {
+  await runChain(entries, {
     system: researchSystem(deep, false),
-    contents: [{ role: "user", parts: [{ text: `Research question: ${query}\n\nSources:\n\n${context}` }] }],
-  });
+    messages: [{ role: "user", text: `Research question: ${query}\n\nSources:\n\n${context}`, images: [] }],
+    maxTokens: 8192,
+  }, send);
 }
 
-const UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Mobile Safari/537.36 LegendBoy/1.0";
+const UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Mobile Safari/537.36 LegendBoy/2.0";
 
 async function freeSearch(q) {
   const [ddg, wiki] = await Promise.all([searchDuckDuckGo(q).catch(() => []), searchWikipedia(q).catch(() => [])]);
@@ -663,83 +728,80 @@ function decodeEntities(s) {
     .replace(/&amp;/g, "&");
 }
 
-/* ------------------------------------------------------------------ */
-/* Voice                                                               */
-/* ------------------------------------------------------------------ */
+/* ==================================================================== */
+/* Voice in (transcribe)                                                */
+/* ==================================================================== */
 
-const LANG_NAMES = { en: "English", ar: "Arabic", ku: "Kurdish", hi: "Hindi", ur: "Urdu", es: "Spanish", fr: "French", de: "German", pt: "Portuguese", tr: "Turkish", ru: "Russian", zh: "Chinese", ja: "Japanese", ko: "Korean", id: "Indonesian", bn: "Bengali", fa: "Persian" };
-
-async function handleTranscribe(request, env) {
+async function handleTranscribe(request, env, entries) {
   const form = await request.formData();
   const audio = form.get("audio");
   const language = (form.get("language") || "").toString().trim();
   if (!audio || typeof audio === "string") return json({ error: "No audio received" }, 400);
   if (audio.size > 18 * 1024 * 1024) return json({ error: "Recording is too long" }, 413);
   if (isMock(env)) return json({ text: "Hey Legend Boy, what can you do? (demo transcription)" });
+  if (!entries.length) return noKeyResponse();
 
   let mimeType = (audio.type || "").split(";")[0] || "audio/wav";
   if (mimeType === "audio/x-m4a" || mimeType === "audio/m4a") mimeType = "audio/mp4";
-  const langHint = LANG_NAMES[language] ? ` The speech is in ${LANG_NAMES[language]}.` : "";
-  const j = await generateOnce(env, {
-    parts: [
-      { inlineData: { mimeType, data: toBase64(await audio.arrayBuffer()) } },
-      { text: `Transcribe this voice message exactly as spoken, in the original language and script.${langHint} Output ONLY the transcript text — no quotes, labels, timestamps or explanations. If there is no clear speech, output nothing.` },
-    ],
-  });
-  let text = responseText(j).trim().replace(/^["“]|["”]$/g, "");
-  if (/^\(?(no (clear )?speech|silence|inaudible)/i.test(text)) text = "";
-  return json({ text });
+  const bytes = new Uint8Array(await audio.arrayBuffer());
+
+  const chain = selectChain(entries, { stt: true });
+  if (!chain.length) return json({ error: capError("stt").message, code: "NO_CAP" }, 422);
+
+  const failures = [];
+  for (const entry of chain) {
+    try {
+      const text = await transcribeAudio(entry, { bytes, mimeType }, language);
+      return json({ text, provider: entry.provider });
+    } catch (e) {
+      console.warn("transcribe failed", entryLabel(entry), e?.message);
+      failures.push({ where: entryLabel(entry), error: String(e?.message || e).slice(0, 200) });
+    }
+  }
+  const err = allFailed(failures);
+  return json({ error: friendlyError(err), code: errorCode(err) || "TRANSCRIBE_FAILED", failures }, 502);
 }
 
-async function handleTTS(request, env) {
+/* ==================================================================== */
+/* Voice out (TTS)                                                      */
+/* ==================================================================== */
+
+async function handleTTS(request, env, entries) {
   const body = await request.json().catch(() => ({}));
   const text = String(body.text || "").trim().slice(0, 1500);
   if (!text) return json({ error: "No text" }, 400);
   if (isMock(env)) return new Response(null, { status: 204 }); // client falls back to the phone's voice
 
-  const voice = VOICES[body.speaker] ? body.speaker : VOICES[env.TTS_SPEAKER] ? env.TTS_SPEAKER : DEFAULTS.voice;
-  const ttsBody = (voiceConfig) => ({
-    contents: [{ role: "user", parts: [{ text }] }],
-    generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig } },
-  });
-  let res;
-  try {
-    res = await geminiFetch(env, models(env).tts, "generateContent", ttsBody({ prebuiltVoiceConfig: { voiceName: voice } }));
-  } catch (e) {
-    if (e.status !== 400) throw e;
-    res = await geminiFetch(env, models(env).tts, "generateContent", ttsBody({ voice })); // newer TTS models
+  const chain = selectChain(entries, { tts: true });
+  if (!chain.length) return new Response(null, { status: 204 }); // phone's own voice takes over
+
+  for (const entry0 of chain) {
+    try {
+      let entry = entry0;
+      let voice = "";
+      if (entry.provider === "gemini") {
+        voice = GEMINI_VOICES[body.speaker] ? body.speaker : GEMINI_VOICES[env.TTS_SPEAKER] ? env.TTS_SPEAKER : PROVIDER_BY_ID.gemini.defaults.voice;
+        entry = { ...entry, ttsModel: env[ENV_TTS_MODEL.gemini] || "" };
+      } else if (entry.provider === "openai") {
+        voice = OPENAI_VOICES[body.speaker] ? body.speaker : OPENAI_VOICES[env.TTS_SPEAKER] ? env.TTS_SPEAKER : PROVIDER_BY_ID.openai.defaults.voice;
+        entry = { ...entry, ttsModel: env[ENV_TTS_MODEL.openai] || "" };
+      }
+      const r = await ttsAudio(entry, text, voice);
+      if (r?.bytes?.length) {
+        return new Response(r.bytes, { headers: { "content-type": r.type, "cache-control": "no-store" } });
+      }
+    } catch (e) {
+      console.warn("tts failed", entryLabel(entry), e?.message);
+    }
   }
-  const j = await res.json();
-  const part = (j?.candidates?.[0]?.content?.parts || []).find((p) => p.inlineData?.data);
-  if (!part) return json({ error: "TTS returned no audio" }, 502);
-  const mime = part.inlineData.mimeType || "";
-  let bytes = fromBase64(part.inlineData.data);
-  let type = mime.split(";")[0] || "audio/wav";
-  if (/L16|pcm/i.test(mime) || (!/wav|mpeg|mp3|ogg|opus|aac|mp4/i.test(mime))) {
-    const rate = Number((mime.match(/rate=(\d+)/) || [])[1]) || 24000;
-    bytes = pcmToWav(bytes, rate);
-    type = "audio/wav";
-  }
-  return new Response(bytes, { headers: { "content-type": type, "cache-control": "no-store" } });
+  return new Response(null, { status: 204 });
 }
 
-function pcmToWav(pcm, rate, channels = 1) {
-  const buf = new ArrayBuffer(44 + pcm.length);
-  const v = new DataView(buf);
-  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-  w(0, "RIFF"); v.setUint32(4, 36 + pcm.length, true); w(8, "WAVE"); w(12, "fmt ");
-  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, channels, true);
-  v.setUint32(24, rate, true); v.setUint32(28, rate * channels * 2, true); v.setUint16(32, channels * 2, true); v.setUint16(34, 16, true);
-  w(36, "data"); v.setUint32(40, pcm.length, true);
-  new Uint8Array(buf, 44).set(pcm);
-  return new Uint8Array(buf);
-}
+/* ==================================================================== */
+/* Files                                                                */
+/* ==================================================================== */
 
-/* ------------------------------------------------------------------ */
-/* Files                                                               */
-/* ------------------------------------------------------------------ */
-
-async function handleExtract(request, env) {
+async function handleExtract(request, env, entries) {
   const form = await request.formData();
   const file = form.get("file");
   if (!file || typeof file === "string") return json({ error: "No file received" }, 400);
@@ -757,18 +819,43 @@ async function handleExtract(request, env) {
   } else if (["csv", "xml", "txt", "md", "json", "tsv"].includes(ext)) {
     text = new TextDecoder().decode(buf);
   } else if (ext === "pdf" || file.type === "application/pdf") {
-    if (isMock(env)) return json({ name, text: `(Demo mode) Pretend content of ${name}. Deploy with your Gemini key to read real PDFs.` });
-    const j = await generateOnce(env, {
-      parts: [
-        { inlineData: { mimeType: "application/pdf", data: toBase64(buf) } },
-        { text: "Extract ALL the text of this document as clean Markdown, keeping headings, lists and tables. Describe charts or images briefly in [brackets]. Output only the document content." },
-      ],
-    });
-    text = responseText(j);
+    if (isMock(env)) return json({ name, text: `(Demo mode) Pretend content of ${name}. Deploy with a key to read real PDFs.` });
+    // Best: a Gemini key can read the whole PDF (even scanned pages).
+    const geminiEntries = entries.filter((e) => e.provider === "gemini");
+    for (const entry of geminiEntries) {
+      try {
+        text = await generateOnce(entry, {
+          messages: [{
+            role: "user",
+            text: "Extract ALL the text of this document as clean Markdown, keeping headings, lists and tables. Describe charts or images briefly in [brackets]. Output only the document content.",
+            images: [{ mimeType: "application/pdf", data: toBase64(buf) }],
+          }],
+          maxTokens: 8192,
+          fast: true,
+        });
+        if (text.trim()) break;
+      } catch (e) {
+        console.warn("pdf via gemini failed", e?.message);
+      }
+    }
+    // No Gemini key (or it failed): use the built-in reader for text-based PDFs.
+    if (!text.trim()) {
+      text = await extractPdfText(buf).catch(() => "");
+      if (text.trim() && geminiEntries.length === 0) {
+        text += "\n\n---\n*(Read by the built-in PDF reader — add a Google Gemini key for scanned PDFs and perfect layout.)*";
+      }
+    }
+    if (!text.trim()) {
+      return json({
+        error: geminiEntries.length
+          ? "Couldn't read this PDF with Gemini or the built-in reader."
+          : "This PDF has no readable text (probably scanned). Add a Google Gemini key in Settings ⚙️ to read it.",
+        code: "NO_CAP",
+      }, 422);
+    }
   } else if (["doc", "xls", "ppt"].includes(ext)) {
     return json({ error: `Old .${ext} files aren't supported — please save it as .${ext}x (or PDF) and try again.` }, 422);
   } else {
-    // Unknown type: try as UTF-8 text
     text = new TextDecoder().decode(buf);
     if (/\uFFFD/.test(text.slice(0, 2000))) return json({ error: "Can't read this file type." }, 422);
   }
@@ -776,6 +863,168 @@ async function handleExtract(request, env) {
   text = text.replace(/\n{3,}/g, "\n\n").trim();
   if (!text) return json({ error: "No readable text found in this file." }, 422);
   return json({ name, text: text.slice(0, 300000) });
+}
+
+/* ---- Built-in PDF reader (no AI needed): inflate streams, pull text operators ---- */
+
+function findBytes(u8, needle, from) {
+  outer: for (let i = from; i + needle.length <= u8.length; i++) {
+    for (let j = 0; j < needle.length; j++) if (u8[i + j] !== needle.charCodeAt(j)) continue outer;
+    return i;
+  }
+  return -1;
+}
+
+async function tryInflate(data) {
+  const dec = new TextDecoder("latin1");
+  // PDFs use zlib ("deflate"), but be tolerant: some writers produce raw deflate or gzip.
+  for (const fmt of ["deflate", "deflate-raw", "gzip"]) {
+    try {
+      const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream(fmt));
+      return dec.decode(await new Response(stream).arrayBuffer());
+    } catch {}
+  }
+  return null;
+}
+
+/** Extract readable text from a simple (text-based) PDF. */
+async function extractPdfText(buf) {
+  const u8 = new Uint8Array(buf);
+  const chunks = [];
+  let pos = 0;
+  for (let guard = 0; guard < 4000; guard++) {
+    const s = findBytes(u8, "stream", pos);
+    if (s < 0) break;
+    let start = s + 6;
+    // The stream data starts after EOL — tolerate extra whitespace before it.
+    while (start < u8.length && (u8[start] === 13 || u8[start] === 10 || u8[start] === 32)) start++;
+    const e = findBytes(u8, "endstream", start);
+    if (e < 0) break;
+    pos = e + 9;
+    let end = e;
+    while (end > start && (u8[end - 1] === 13 || u8[end - 1] === 10 || u8[end - 1] === 32)) end--;
+    const data = u8.subarray(start, end);
+    let text = null;
+    if (data.length >= 4 && (data[0] === 0x78 || data[0] === 0x1f || (data[0] & 0x0f) === 0x08)) text = await tryInflate(data);
+    if (!text && data.length >= 4) {
+      // Some extractors hit stray bytes before the real header — retry from the first plausible start.
+      for (let k = 1; k < Math.min(16, data.length - 4) && !text; k++) {
+        if (data[k] === 0x78 || data[k] === 0x1f) text = await tryInflate(data.subarray(k));
+      }
+    }
+    if (!text && /BT|Tj|TJ/.test(new TextDecoder("latin1").decode(data.subarray(0, 200)))) {
+      text = new TextDecoder("latin1").decode(data);
+    }
+    if (text && /\bBT\b|Tj|TJ/.test(text)) chunks.push(text);
+  }
+  const all = chunks.join("\n");
+  if (!all) return "";
+  return pdfContentToText(all);
+}
+
+/** Pull strings out of PDF content streams (Tj / TJ operators). */
+function pdfContentToText(content) {
+  const out = [];
+  let i = 0;
+  const n = content.length;
+  let line = [];
+  const flushLine = () => { if (line.length) { out.push(line.join("")); line = []; } };
+
+  const readLiteralString = () => {
+    // content[i] === "("
+    let depth = 1;
+    let s = "";
+    i++;
+    while (i < n && depth > 0) {
+      const c = content[i];
+      if (c === "\\") {
+        const nc = content[i + 1];
+        if (nc === "n") s += "\n";
+        else if (nc === "r" || nc === "t") s += " ";
+        else if (nc === "(" ) s += "(";
+        else if (nc === ")") s += ")";
+        else if (nc === "\\") s += "\\";
+        else if (/[0-7]/.test(nc || "")) {
+          const oct = content.slice(i + 1, i + 4).match(/^[0-7]{1,3}/)[0];
+          s += String.fromCharCode(parseInt(oct, 8));
+          i += oct.length - 1;
+        } else s += nc || "";
+        i += 2;
+        continue;
+      }
+      if (c === "(") depth++;
+      else if (c === ")") {
+        depth--;
+        if (depth === 0) { i++; break; }
+      }
+      if (depth > 0) s += c;
+      i++;
+    }
+    return s;
+  };
+
+  const decodeText = (s) => {
+    if (!s) return "";
+    if (s.charCodeAt(0) === 0xfe && s.charCodeAt(1) === 0xff) {
+      let r = "";
+      for (let k = 2; k + 1 < s.length; k += 2) r += String.fromCharCode((s.charCodeAt(k) << 8) | s.charCodeAt(k + 1));
+      return r;
+    }
+    return s;
+  };
+
+  const maybeHexString = () => {
+    // content[i] === "<" but not "<<"
+    let j = i + 1;
+    let hex = "";
+    while (j < n && content[j] !== ">") { if (/[0-9a-fA-F]/.test(content[j])) hex += content[j]; j++; }
+    if (content[j] !== ">" || !hex) return null;
+    i = j + 1;
+    let s = "";
+    for (let k = 0; k + 1 < hex.length; k += 2) s += String.fromCharCode(parseInt(hex.slice(k, k + 2), 16));
+    return s;
+  };
+
+  let lastTok = "";
+  while (i < n) {
+    const c = content[i];
+    if (c === "(") {
+      lastTok = decodeText(readLiteralString());
+      continue;
+    }
+    if (c === "<" && content[i + 1] !== "<") {
+      const h = maybeHexString();
+      if (h !== null) { lastTok = decodeText(h); continue; }
+    }
+    // word/operator token
+    if (/[A-Za-z*"']/.test(c)) {
+      let j = i;
+      while (j < n && /[A-Za-z*"']/.test(content[j])) j++;
+      const op = content.slice(i, j);
+      i = j;
+      if (op === "Tj" || op === "'" || op === '"') { line.push(lastTok); }
+      else if (op === "TJ") { line.push(lastTok); }
+      else if (op === "Td" || op === "TD" || op === "T*") flushLine();
+      continue;
+    }
+    // inside TJ arrays: numbers < -200 mean a space
+    if (c === "-" ) {
+      let j = i;
+      while (j < n && /[-0-9.]/.test(content[j])) j++;
+      const num = Number(content.slice(i, j));
+      if (num <= -120 && !line.join("").endsWith(" ")) line.push(" ");
+      i = j || i + 1;
+      continue;
+    }
+    i++;
+  }
+  flushLine();
+  return out
+    .map((l) => l.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 /* Minimal ZIP reader (for .docx .xlsx .pptx .odt .ods .odp) */
@@ -858,11 +1107,11 @@ async function extractOffice(buf, ext) {
   return xmlText((f["content.xml"] || "").replace(/<\/text:(p|h)>/g, "\n").replace(/<\/table:table-cell>/g, " | ").replace(/<\/table:table-row>/g, "\n"));
 }
 
-/* ------------------------------------------------------------------ */
-/* Imagine                                                             */
-/* ------------------------------------------------------------------ */
+/* ==================================================================== */
+/* Imagine                                                              */
+/* ==================================================================== */
 
-async function handleImagine(request, env) {
+async function handleImagine(request, env, entries) {
   const body = await request.json().catch(() => ({}));
   const prompt = String(body.prompt || "").trim().slice(0, 2000);
   if (!prompt) return json({ error: "Describe the image you want." }, 400);
@@ -871,16 +1120,23 @@ async function handleImagine(request, env) {
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="768" height="768"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/><text x="50%" y="50%" fill="#fff" font-size="36" font-family="sans-serif" text-anchor="middle">Demo image</text></svg>`;
     return json({ image: "data:image/svg+xml;base64," + btoa(svg), prompt });
   }
+  if (!entries.length) return noKeyResponse();
 
-  const res = await geminiFetch(env, models(env).image, "generateContent", {
-    contents: [{ role: "user", parts: [{ text: `Create an image: ${prompt}` }] }],
-    generationConfig: { responseModalities: ["TEXT", "IMAGE"] },
-  });
-  const j = await res.json();
-  const part = (j?.candidates?.[0]?.content?.parts || []).find((p) => p.inlineData?.data && /^image\//.test(p.inlineData.mimeType || "image/"));
-  if (!part) {
-    const why = blockedReason(j) || responseText(j) || "No image returned.";
-    return json({ error: "Image generation failed: " + why.slice(0, 300) }, 502);
+  const chain = selectChain(entries, { images: true });
+  if (!chain.length) return json({ error: capError("images").message, code: "NO_CAP" }, 422);
+
+  const failures = [];
+  for (const entry of chain) {
+    try {
+      const envVar = ENV_IMAGE_MODEL[entry.provider];
+      const e2 = envVar && env[envVar] ? { ...entry, imageModel: env[envVar] } : entry;
+      const image = await generateImage(e2, prompt);
+      if (image) return json({ image, prompt, provider: entry.provider });
+    } catch (e) {
+      console.warn("imagine failed", entryLabel(entry), e?.message);
+      failures.push({ where: entryLabel(entry), error: String(e?.message || e).slice(0, 200) });
+    }
   }
-  return json({ image: `data:${part.inlineData.mimeType || "image/png"};base64,${part.inlineData.data}`, prompt });
+  const err = allFailed(failures);
+  return json({ error: friendlyError(err), failures }, 502);
 }

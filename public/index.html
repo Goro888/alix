@@ -42,13 +42,14 @@
       <button class="icon-btn" id="btnHistory" aria-label="Chats">
         <svg viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h12v2H3z"/></svg>
       </button>
-      <div class="brand">
+      <button class="brand brand-btn" id="brandBtn" aria-label="Choose which AI answers">
         <img class="brand-avatar avatar-img" src="/img/legend-boy.jpg" alt="" />
         <div class="brand-text">
           <strong>Legend Boy</strong>
           <span class="status" id="statusText"><i class="dot"></i>Online</span>
         </div>
-      </div>
+        <span class="brand-caret">▾</span>
+      </button>
       <button class="icon-btn" id="btnNewChat" aria-label="New chat">
         <svg viewBox="0 0 24 24"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
       </button>
@@ -266,15 +267,50 @@
     <button class="btn-primary wide" id="imagineGo">Create</button>
   </div>
 
-  <!-- Connect Gemini sheet -->
+  <!-- Add an AI key sheet -->
   <div class="sheet" id="keySheet" hidden>
     <div class="sheet-handle"></div>
-    <h3 class="sheet-title">🔑 Connect Legend Boy to Gemini</h3>
-    <p class="fine left">Paste your Google Gemini API key once. It's saved <b>only on this phone</b> and used to talk to Gemini.</p>
-    <input id="keyInput" class="key-input" type="password" placeholder="Paste your key (starts with AQ. or AIza)" autocomplete="off" autocapitalize="off" spellcheck="false" />
-    <button class="btn-primary wide" id="keySave">Connect</button>
-    <a class="btn-link center" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Don't have a key? Get a free one →</a>
+    <h3 class="sheet-title">🔑 Add an AI key</h3>
+    <p class="fine left">One key is enough to start — Gemini has a free tier. Add more keys later and Legend Boy uses them one after another automatically. Keys are saved <b>only on this phone</b>.</p>
+    <label class="field">Company
+      <select id="keyProvider"></select>
+    </label>
+    <label class="field" id="keyBaseWrap" hidden>Server address
+      <input id="keyBase" type="url" placeholder="https://your-server.com/v1" autocomplete="off" autocapitalize="off" spellcheck="false" />
+    </label>
+    <label class="field">API key
+      <input id="keyInput" class="key-input" type="password" placeholder="Paste your key here" autocomplete="off" autocapitalize="off" spellcheck="false" />
+    </label>
+    <p class="fine left" id="keyDetect"></p>
+    <label class="field">Model <small class="hint">optional — leave empty for a good default</small>
+      <div class="model-row">
+        <input id="keyModel" type="text" placeholder="Type any model name…" autocomplete="off" autocapitalize="off" spellcheck="false" />
+        <button class="chip" id="keyBrowse" type="button">Change ▾</button>
+      </div>
+    </label>
+    <button class="btn-primary wide" id="keySave">Add key</button>
+    <a class="btn-link center" id="keyGetLink" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Don't have a key? Get a free one →</a>
     <p class="fine" id="keyMsg"></p>
+  </div>
+
+  <!-- Model picker sheet (search the company's real model list) -->
+  <div class="sheet" id="modelSheet" hidden>
+    <div class="sheet-handle"></div>
+    <h3 class="sheet-title" id="modelTitle">Choose a model</h3>
+    <input id="modelSearch" class="key-input" type="search" placeholder="Search models, or type your own…" autocomplete="off" autocapitalize="off" spellcheck="false" />
+    <div class="model-list" id="modelList"></div>
+    <p class="fine" id="modelNote"></p>
+    <button class="btn-primary wide" id="modelUse">Use this model</button>
+    <button class="btn-link center" id="modelReset">Use the company default</button>
+  </div>
+
+  <!-- Quick AI switcher (tap the name at the top of the chat) -->
+  <div class="sheet" id="switchSheet" hidden>
+    <div class="sheet-handle"></div>
+    <h3 class="sheet-title">⚡ Who answers you?</h3>
+    <p class="fine left">Keys are tried top to bottom — if one is wrong, out of credit or at its limit, the next answers automatically.</p>
+    <div class="switch-list" id="switchList"></div>
+    <button class="btn-primary wide" id="switchManage">Manage keys &amp; models</button>
   </div>
 
   <!-- History drawer -->
@@ -307,7 +343,7 @@
       </label>
       <label class="field">Voice engine
         <select id="setEngine">
-          <option value="cloud">Legend HD voice (Gemini)</option>
+          <option value="cloud">Legend HD voice (needs a Gemini or OpenAI key)</option>
           <option value="device">Phone's built-in voice</option>
         </select>
       </label>
@@ -339,10 +375,14 @@
       </label>
       <label class="toggle"><input type="checkbox" id="setAutoSpeak" /> <span>Read chat replies out loud</span></label>
       <label class="toggle"><input type="checkbox" id="setGreet" /> <span>Greet me with voice when I open the app</span></label>
-      <label class="field">Gemini API key
-        <input id="setGeminiKey" type="password" placeholder="Paste key — saved only on this phone" autocomplete="off" autocapitalize="off" spellcheck="false" />
-        <small class="hint" id="setKeyHint"></small>
-      </label>
+      <div class="keys-sec">
+        <div class="keys-head">
+          <strong>AI keys &amp; models</strong>
+          <button class="chip" id="keysAdd" type="button">＋ Add an API key</button>
+        </div>
+        <div id="keysList"></div>
+        <small class="hint" id="keysServerNote"></small>
+      </div>
       <label class="field" id="setCodeWrap">Access code
         <input id="setCode" type="password" placeholder="Only if you set ACCESS_CODE" autocomplete="off" />
       </label>

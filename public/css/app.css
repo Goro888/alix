@@ -393,3 +393,50 @@ body.kb-open .tabbar { display: none; }
 .key-input:focus { border-color: rgba(34,211,238,.5); }
 .hint { color: var(--muted); font-size: 12px; }
 .hint.ok { color: #4ade80; }
+
+/* ---------- Multi-provider: keys, models, switcher ---------- */
+.brand-btn { text-align: left; cursor: pointer; border-radius: 14px; padding: 4px 6px; margin: -4px -2px; }
+.brand-btn:active { background: var(--panel2); }
+.brand-caret { color: var(--muted); font-size: 13px; flex: none; margin-right: 2px; }
+.status.none .dot { background: #f59e0b; box-shadow: 0 0 8px #f59e0b; }
+
+.m-via { margin-top: 8px; font-size: 11.5px; color: var(--muted); opacity: .85; display: flex; align-items: center; gap: 4px; border-top: 1px dashed var(--line); padding-top: 6px; }
+
+.keys-sec { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line); }
+.keys-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.keys-head strong { font-size: 15px; }
+#keysList { display: flex; flex-direction: column; gap: 8px; }
+.key-row { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 14px; background: rgba(0,0,0,.25); border: 1px solid var(--line); }
+.key-ic, .sw-ic { width: 34px; height: 34px; border-radius: 12px; display: grid; place-items: center; font-weight: 800; font-size: 14px; flex: none; }
+.key-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.key-meta strong { font-size: 14px; display: flex; gap: 8px; align-items: baseline; }
+.key-meta strong small { color: var(--muted); font-weight: 400; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+.key-model { color: var(--muted); font-size: 12.5px; text-align: left; padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.key-model b { color: var(--cyan); font-weight: 600; font-size: 11.5px; }
+.key-tools { display: flex; gap: 2px; flex: none; }
+.key-tools button { width: 30px; height: 30px; border-radius: 9px; color: var(--muted); font-size: 14px; display: grid; place-items: center; }
+.key-tools button:active { background: var(--panel2); color: var(--text); }
+.key-tools button:disabled { opacity: .3; }
+
+.model-row { display: flex; gap: 8px; align-items: center; }
+.model-row input { flex: 1; min-width: 0; padding: 12px 14px; border-radius: 12px; background: rgba(0,0,0,.3); border: 1px solid var(--line); outline: 0; font-size: 16px; color: var(--text); }
+.model-row input:focus { border-color: rgba(34,211,238,.5); }
+.model-row .chip { flex: none; }
+
+.model-list { display: flex; flex-direction: column; gap: 6px; max-height: 40vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.model-item { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 11px 14px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); }
+.model-item strong { font-size: 14px; font-family: ui-monospace, Menlo, monospace; font-weight: 600; word-break: break-all; }
+.model-item small { color: var(--muted); font-size: 12px; }
+.model-item.active { border-color: var(--cyan); background: rgba(34,211,238,.1); }
+.model-item:active { background: var(--panel2); }
+
+.switch-list { display: flex; flex-direction: column; gap: 8px; }
+.switch-item { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line); text-align: left; }
+.switch-item:active { background: var(--panel2); }
+.switch-item.static { opacity: .85; }
+.sw-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.sw-meta strong { font-size: 14.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-meta small { color: var(--muted); font-size: 12px; }
+.sw-check { width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--line); display: grid; place-items: center; color: transparent; font-size: 13px; font-weight: 800; flex: none; }
+.switch-item.active { border-color: var(--cyan); background: rgba(34,211,238,.08); }
+.switch-item.active .sw-check { background: var(--cyan); border-color: var(--cyan); color: #000; }

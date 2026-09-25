@@ -1,8 +1,43 @@
-# Legend Boy: your AI assistant for your phone (powered by Google Gemini)
+# Legend Boy: your AI assistant for your phone — any AI company, any model
 
-Legend Boy is a mobile AI assistant. **Cloudflare only hosts it** (free). **All the AI runs on Google Gemini** using your own API key.
+Legend Boy is a mobile AI assistant. **Cloudflare only hosts it** (free). **All the AI runs on your own API key(s)** — and you're not locked to one company.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Goro888/Alixo)
+
+## Works with almost any AI company
+
+Paste a key and Legend Boy detects who it's from. **You only need one key** (Gemini has a free tier) — add more and they're used one after another automatically.
+
+| Company | Key looks like | Chat | Photos | Voice in | HD voice out | Images | Research |
+|---|---|---|---|---|---|---|---|
+| **Google Gemini** | `AIza…` / `AQ.…` | ✅ | ✅ | ✅ | ✅ (30 voices) | ✅ | ✅ Google Search with citations |
+| **OpenAI (ChatGPT)** | `sk-…` / `sk-proj-…` | ✅ | ✅ | ✅ (Whisper) | ✅ | ✅ | ✅ (web search) |
+| **Claude (Anthropic)** | `sk-ant-…` | ✅ | ✅ | — | — | — | ✅ (web search) |
+| **OpenRouter** (400+ models) | `sk-or-…` | ✅ | ✅* | — | — | — | ✅ (web search) |
+| **Groq** (ultra fast) | `gsk_…` | ✅ | ✅* | ✅ | — | — | ✅ (web search) |
+| **DeepSeek** | `sk-…` | ✅ | — | — | — | — | ✅ (web search) |
+| **Grok (xAI)** | `xai-…` | ✅ | ✅ | — | — | ✅ | ✅ (web search) |
+| **Mistral** | any | ✅ | ✅ | ✅ | — | — | ✅ (web search) |
+| **Perplexity** | `pplx-…` | ✅ | — | — | — | — | ✅ **live web search built in** |
+| **Together AI** | any | ✅ | ✅* | — | — | ✅ (FLUX) | ✅ (web search) |
+| **Cerebras** (fastest) | `csk-…` | ✅ | — | — | — | — | ✅ (web search) |
+| **Hugging Face** | `hf_…` | ✅ | — | — | — | — | ✅ (web search) |
+| **Fireworks AI** | `fw_…` | ✅ | ✅* | ✅ | — | — | ✅ (web search) |
+| **Any OpenAI-compatible server** | any | ✅ | ✅* | — | — | — | ✅ (web search) |
+
+\* depends on the model you pick. "Web search" = a free built-in search (DuckDuckGo + Wikipedia) — no Google needed.
+
+### Many keys at once = automatic failover
+Keys are tried **top to bottom**. If one is wrong, out of credit or rate-limited, the next answers automatically. Each reply shows a small line like **⚡ Claude · claude-sonnet-5** so you can see who answered.
+
+### Any model
+Tap **Change ▾** under any key to search that company's **live model list**, or type any model name yourself. Tap the **name at the top of the chat** to switch which AI answers instantly.
+
+### Graceful fallbacks
+- **HD voice out** needs a Gemini or OpenAI key — otherwise the phone's own voice speaks automatically.
+- **Voice typing** works with Gemini, OpenAI, Groq, Mistral or Fireworks keys (clear message otherwise).
+- **PDFs**: a Gemini key reads anything (even scanned); without one, the built-in PDF reader handles text-based PDFs.
+- Old Gemini-only setups: your key is moved into the new key list automatically.
 
 ## Features
 
@@ -10,23 +45,13 @@ Legend Boy is a mobile AI assistant. **Cloudflare only hosts it** (free). **All 
 |---|---|
 | **Splash** | Opens with Legend Boy's photo and a glowing animation. Tap it and he **greets you out loud** |
 | **Talk** | Hands-free voice chat. You talk, he listens, stops by himself when you go quiet, answers **with his voice**, then listens again. Tap his face to interrupt him |
-| **Chat** | Streaming AI chat with Markdown and code blocks. Each reply can be copied, read aloud, shared or retried. Chats are saved to the device, and you can use voice typing |
-| **Camera** | Live camera with front/back flip. Take a photo, then ask about it with a mode: *Describe, Read text, Solve, Translate, Identify, Tips* |
+| **Chat** | Streaming AI chat with Markdown and code blocks. Each reply can be copied, read aloud, shared or retried. Chats are saved on the device, voice typing included |
+| **Camera** | Live camera with front/back flip. Take a photo, then ask about it: *Describe, Read text, Solve, Translate, Identify, Tips* (needs a vision-capable model) |
 | **Files & Photos** | Reads **PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), CSV, text, code** and photos. Summarise, explain, pull out key facts, or get a quiz |
-| **Research** | Uses **Google Search grounding**: Gemini searches Google and writes a report with **numbered citations** and source cards. Has *Quick* and *Deep* modes |
-| **Create image** | Makes an image from text with Gemini "Nano Banana" |
-| **Settings** | Change Legend Boy's photo, set your name, pick one of 30 Gemini voices (or the phone's voice), choose the speech language (incl. Kurdish and Arabic), turn on auto-read and the greeting, delete chats |
+| **Research** | Gemini → **Google Search grounding** with numbered citations. Perplexity → its own live web search. Any other key → free web search. *Quick* and *Deep* modes |
+| **Create image** | Makes an image from words (Gemini "Nano Banana", OpenAI gpt-image, Grok, Together FLUX…) |
+| **Settings** | Keys & models, Legend Boy's photo, your name, voices, speech language (incl. Kurdish and Arabic), auto-read, greeting |
 | **Install as app** | It's a PWA: "Add to Home Screen" gives it an icon and opens it full screen |
-
-### Gemini models used (change them in `wrangler.jsonc` → `vars`)
-| Var | Default | Used for |
-|---|---|---|
-| `GEMINI_MODEL` | `gemini-flash-latest` (always Google's newest Flash) | chat, photos, research, voice transcription, PDF reading |
-| `GEMINI_TTS_MODEL` | `gemini-3.8-flash-lite-tts` | Legend Boy's voice |
-| `GEMINI_IMAGE_MODEL` | `gemini-3.1-flash-lite-image` | creating images |
-| `TTS_SPEAKER` | `Puck` | default voice |
-
-If a model isn't available on your plan, the app shows a clear error. Voice falls back to the phone's built-in voice automatically.
 
 ---
 
@@ -36,56 +61,50 @@ If a model isn't available on your plan, the app shows a clear error. Voice fall
 | Setting | Type | Set up how |
 |---|---|---|
 | `GEMINI_MODEL` = `gemini-flash-latest` | Text | ✅ Automatic, from `wrangler.jsonc` |
-| `GEMINI_TTS_MODEL` = `gemini-3.8-flash-lite-tts` | Text | ✅ Automatic, from `wrangler.jsonc` |
-| `TTS_SPEAKER` = `Puck` | Text | ✅ Automatic, from `wrangler.jsonc` |
-| `GEMINI_IMAGE_MODEL` = `gemini-3.1-flash-lite-image` | Text | ✅ Automatic, from `wrangler.jsonc` |
-| `GEMINI_API_KEY` | **Secret** | ✅ The Deploy button asks for it, **or** `npm run deploy` copies it from your Build variables, **or** the app asks for it the first time you open it |
+| `GEMINI_TTS_MODEL`, `TTS_SPEAKER`, `GEMINI_IMAGE_MODEL` | Text | ✅ Automatic, from `wrangler.jsonc` |
+| `GEMINI_API_KEY` (or **any** provider key) | **Secret** | ✅ The Deploy button asks for it, **or** `npm run deploy` promotes it from your Build variables, **or** the app asks for it on first open |
 
 ### 1) Deploy the app (pick one)
 
-**A. One-tap button (easiest):** tap the **Deploy to Cloudflare** button at the top.
-It shows a **GEMINI_API_KEY** box. Paste your key from **https://aistudio.google.com/apikey** and tap **Deploy**.
-Cloudflare saves it as an encrypted **Secret** for you, and the 4 variables are added automatically.
+**A. One-tap button (easiest):** tap **Deploy to Cloudflare** above. Paste a key from **any** company and tap **Deploy**. Cloudflare saves it as an encrypted **Secret**.
 
-**B. Connect this repo (dashboard, works on a phone):**
+**B. Connect this repo (works on a phone):**
 1. **dash.cloudflare.com → Workers & Pages → Create → Import a repository**
 2. Choose **Goro888/Alixo**, branch **main**. Leave **Build command** empty. **Deploy command:** `npm run deploy`
-3. Under **Build → Variables and secrets**, add Type **Secret**, Name `GEMINI_API_KEY`, Value = your key
-4. Tap **Deploy**. The 4 variables are added automatically, and the deploy copies your key into the Worker as a runtime **Secret**.
+3. Under **Build → Variables and secrets**, add your key(s) as **Secret** (e.g. `GEMINI_API_KEY`, `OPENAI_API_KEY`…)
+4. Tap **Deploy** — the deploy script saves every recognised key as a runtime **Secret**, even if you pasted it into a differently-named box.
 
 **C. From a computer:** `npm install && npx wrangler login && npm run deploy`
 
-### 2) The Gemini key
-- **If you used the button**, you're done.
-- **Otherwise, just open the app.** Legend Boy shows **"🔑 Connect Legend Boy to Gemini"**. Paste your key once, and it's checked and saved on that phone.
-  (You can change it any time in **Settings ⚙️ → Gemini API key**.)
-- **Or add it on Cloudflare for every device:** Worker → **Settings → Variables and Secrets → + Add** → Type **Secret**, Name `GEMINI_API_KEY` → **Deploy**
-  (computer: `npx wrangler secret put GEMINI_API_KEY`).
-  A key saved on Cloudflare always wins over a key saved in the app.
+### 2) Add keys (any mix of these, all optional)
+- **In the app (easiest):** open it → **Settings ⚙️ → AI keys & models → ＋ Add an API key**. The company is detected from the key; tap **Change ▾** to pick a model. Keys are saved **only on that phone**.
+- **On Cloudflare (shared across devices):** Worker → **Settings → Variables and Secrets → + Add** → Type **Secret**, name e.g. `GEMINI_API_KEY` → **Deploy** (computer: `npx wrangler secret put GEMINI_API_KEY`).
+- **Priority:** Cloudflare secrets first, then the phone's keys top to bottom.
 
-> ⚠️ Never paste your key into `wrangler.jsonc` or any file in this repo. It's public, and bots steal keys within minutes.
-> A key saved in the app stays on that phone only. A key saved on Cloudflare is shared, so anyone with your link uses it. Add an `ACCESS_CODE` secret (below) to lock the app.
+> ⚠️ Never paste keys into `wrangler.jsonc` or any file in this repo — it's public and bots steal keys within minutes.
+> A key saved in the app stays on that phone. A key saved on Cloudflare is shared — add an `ACCESS_CODE` secret to lock the app.
 
 ### 3) Put it on your phone
 Open `https://legend-boy.<your-name>.workers.dev`
 - **iPhone (Safari):** Share → **Add to Home Screen**
 - **Android (Chrome):** ⋮ → **Install app**
 
-Camera and microphone need https. Cloudflare gives you https automatically.
-
-### Optional secrets
-| Secret | Why |
+### Optional secrets / vars
+| Name | Why |
 |---|---|
-| `ACCESS_CODE` | Password-locks the app so strangers can't use up your Gemini quota. Enter the code in the app's Settings |
+| `ACCESS_CODE` | Password-locks the app so strangers can't use your quota |
+| `GEMINI_MODEL` | Default Gemini model (`gemini-flash-latest` = always the newest Flash) |
+| `GEMINI_TTS_MODEL`, `TTS_SPEAKER` | HD voice model + default voice |
+| `GEMINI_IMAGE_MODEL` | Image model for Create image |
+| `OPENAI_MODEL`, `ANTHROPIC_MODEL`, `GROQ_MODEL`, `OPENROUTER_MODEL`, `DEEPSEEK_MODEL`, `XAI_MODEL`, `MISTRAL_MODEL`, `PERPLEXITY_MODEL`, `TOGETHER_MODEL`, `CEREBRAS_MODEL`, `HUGGINGFACE_MODEL`, `FIREWORKS_MODEL` | Default model for each provider (overridable per key in the app) |
 
-**Cost:** Cloudflare Workers hosting is free (100k requests/day). Gemini has a free tier with per-minute and per-day limits. See your limits at https://aistudio.google.com/rate-limit. If you hit them, the app tells you to wait.
+**Cost:** Cloudflare Workers hosting is free (100k requests/day). Most providers have free or cheap tiers — Gemini's is generous. If you hit a limit, the next key answers automatically.
 
 ---
 
 ## 🖼️ Use your own photo for Legend Boy
-There are two ways:
-1. **In the app:** Settings ⚙️ → *Legend Boy's photo* → **Change photo**. The photo is stored on your phone.
-2. **For everyone:** replace `public/img/legend-boy.jpg` with your photo (square, about 640×640). If you want the icons to match, also replace `icon-192.png`, `icon-512.png`, `icon-maskable-512.png`, `apple-touch-icon.png` and `favicon.png` in the same folder. Then redeploy.
+1. **In the app:** Settings ⚙️ → *Legend Boy's photo* → **Change photo** (stored on your phone).
+2. **For everyone:** replace `public/img/legend-boy.jpg` with your photo (square, ~640×640); optionally replace the `icon-*.png` files next to it.
 
 ---
 
@@ -93,23 +112,28 @@ There are two ways:
 ```bash
 npm install
 npm run dev:demo   # demo mode: fake AI answers, no key needed
-# real AI locally: copy .dev.vars.example to .dev.vars and paste your key (it is git-ignored), then:
+# real AI locally: copy .dev.vars.example to .dev.vars, paste any provider key (git-ignored), then:
 npm run dev
+# backend tests (fake provider APIs, no key needed):
+node scripts/test-multi.mjs
 ```
 
 ## Project structure
 ```
-wrangler.jsonc          Cloudflare config (Worker + static assets + Gemini model vars)
+wrangler.jsonc          Cloudflare config (assets + model default vars)
 wrangler.demo.jsonc     Local demo config (fake AI)
-src/worker.js           API (Gemini): /api/chat, /api/research, /api/transcribe, /api/tts, /api/extract, /api/imagine
+src/providers.js        Multi-provider engine: 14 companies, key detection, failover chain, 3 API styles
+src/worker.js           API routes: /api/chat, /api/research, /api/transcribe, /api/tts,
+                        /api/extract (incl. built-in PDF reader), /api/imagine, /api/verify, /api/models, /api/health
+scripts/deploy.mjs      `npm run deploy` — promotes any provider key from Build variables to Secrets
+scripts/test-multi.mjs  Backend test suite (fake Gemini/OpenAI/Anthropic APIs)
 public/                 The phone app (no build step)
-  index.html            Screens: splash, chat, talk, camera, files, research, settings
+  index.html            Screens: splash, chat, talk, camera, files, research, settings + key/model/switcher sheets
   css/app.css           Mobile-first dark UI with safe-area support
-  js/app.js             App logic
+  js/app.js             App logic (keys, models, quick switcher, streaming chat…)
+  js/api.js, store.js   API client (x-ai-keys header) + local storage
   js/voice.js           Mic recording + auto-stop on silence + voice playback queue
-  js/camera.js          Live camera
-  js/markdown.js        Safe Markdown renderer
-  js/api.js, store.js, media.js
+  js/camera.js, markdown.js, media.js
   sw.js, manifest.webmanifest   Installable PWA
   img/                  Legend Boy photo + app icons
 ```
