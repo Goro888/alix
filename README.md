@@ -51,6 +51,7 @@ Tap **Change ▾** under any key to search that company's **live model list**, o
 | **Research** | Gemini → **Google Search grounding** with numbered citations. Perplexity → its own live web search. Any other key → free web search. *Quick* and *Deep* modes |
 | **Create image** | Makes an image from words (Gemini "Nano Banana", OpenAI gpt-image, Grok, Together FLUX…) |
 | **Settings** | Keys & models, Legend Boy's photo, your name, voices, speech language (incl. Kurdish and Arabic), auto-read, greeting |
+| **Open apps** | Type `/open` (or `/افتح`) in chat to jump straight into another app: `/open whatsapp +9647701234567 hi`, `/open youtube funny cats`, `/open ig username`, `/open call 0770…`. Supports WhatsApp, Telegram, Signal, Viber, Messenger, SMS, Instagram, TikTok, YouTube, Snapchat, Facebook, X, Reddit, Pinterest, LinkedIn (Arabic names too). If an app isn't installed, it opens the website or App Store instead |
 | **Install as app** | It's a PWA: "Add to Home Screen" gives it an icon and opens it full screen |
 
 ---

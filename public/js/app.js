@@ -6,6 +6,7 @@ import { renderMarkdown } from "./markdown.js";
 import { Recorder, Speaker, SentenceStream, unlockAudio, releaseMic } from "./voice.js";
 import { Camera, cameraErrorMessage } from "./camera.js";
 import * as media from "./media.js";
+import { runOpenCommand } from "./social.js";
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -598,6 +599,13 @@ async function sendFromComposer(preset) {
   if (state.pending.some((p) => p.status === "loading")) return toast("Still reading your files… one sec");
   const ready = state.pending.filter((p) => p.status === "ready");
   if (!text.trim() && !ready.length) return;
+  // "/open whatsapp 9647… hi" · "/افتح يوتيوب …" → open the app directly (must run synchronously on the tap)
+  if (!ready.length && /^\/(open|افتح)\s/i.test(text.trim())) {
+    input.value = "";
+    input.style.height = "auto";
+    runOpenCommand(text);
+    return toast("Opening…", 1500);
+  }
   const images = ready.filter((p) => p.kind === "image").map((p) => p.dataUrl);
   const files = ready.filter((p) => p.kind !== "image").map((p) => ({ name: p.name, size: p.size, text: p.text }));
   input.value = "";
