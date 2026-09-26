@@ -11,7 +11,7 @@
  */
 import http from "node:http";
 import { deflateSync, gzipSync } from "node:zlib";
-import { detectProvider, buildEntries, shortModel } from "../src/providers.js";
+import { detectProvider, buildEntries, shortModel, normalizeBaseUrl, entryCan, chatModelOf } from "../src/providers.js";
 import worker from "../src/worker.js";
 
 /* ------------------------------------------------------------- */
@@ -510,6 +510,94 @@ try {
     const r = await callApi("/api/chat", { body: { messages: [{ role: "user", content: "hi" }] } });
     const j = await r.json();
     ok(r.status === 500 && j.code === "NO_KEY" && /any AI company|AI keys & models/.test(j.error), "clear multi-provider no-key message");
+  }
+
+  section("15 · Extended file extraction (v2.1)");
+  {
+    // HTML extraction
+    const fdHtml = new FormData();
+    fdHtml.append("file", new Blob(["<html><body><h1>Hello</h1><p>World</p></body></html>"], { type: "text/html" }), "page.html");
+    const rHtml = await callApi("/api/extract", { formData: fdHtml });
+    const jHtml = await rHtml.json();
+    ok(/Hello/.test(jHtml.text) && /World/.test(jHtml.text), "HTML file extracted to text");
+
+    // CSV extraction
+    const fdCsv = new FormData();
+    fdCsv.append("file", new Blob(["name,age\nAlice,30\nBob,25"], { type: "text/csv" }), "data.csv");
+    const rCsv = await callApi("/api/extract", { formData: fdCsv });
+    const jCsv = await rCsv.json();
+    ok(/Alice/.test(jCsv.text) && /Bob/.test(jCsv.text), "CSV file read as plain text");
+
+    // JSON extraction
+    const fdJson = new FormData();
+    fdJson.append("file", new Blob(['{"key":"value"}'], { type: "application/json" }), "data.json");
+    const rJson = await callApi("/api/extract", { formData: fdJson });
+    const jJson = await rJson.json();
+    ok(/value/.test(jJson.text), "JSON file read as plain text");
+
+    // Old .doc file should be rejected
+    const fdDoc = new FormData();
+    fdDoc.append("file", new Blob(["fake doc content"], { type: "application/msword" }), "old.doc");
+    const rDoc = await callApi("/api/extract", { formData: fdDoc });
+    const jDoc = await rDoc.json();
+    ok(rDoc.status === 422 && /supported/.test(jDoc.error), "old .doc file rejected with clear message");
+
+    // Markdown preserved
+    const fdMd = new FormData();
+    fdMd.append("file", new Blob(["# Title\nSome **bold** text"], { type: "text/markdown" }), "notes.md");
+    const rMd = await callApi("/api/extract", { formData: fdMd });
+    const jMd = await rMd.json();
+    ok(/Title/.test(jMd.text) && /bold/.test(jMd.text), "Markdown file preserved");
+  }
+
+  section("16 · Security, CORS & validation (v2.1)");
+  {
+    // OPTIONS returns CORS
+    const rOpt = await worker.fetch(new Request("http://test/api/chat", { method: "OPTIONS" }), makeEnv());
+    ok(rOpt.status === 204 && rOpt.headers.get("access-control-allow-origin") === "*", "OPTIONS returns CORS headers");
+
+    // GET on POST-only endpoint returns 405
+    const rGet = await worker.fetch(new Request("http://test/api/chat", { method: "GET" }), makeEnv({ GEMINI_API_KEY: KEYS.gemini }));
+    ok(rGet.status === 405, "GET on /api/chat returns 405 Method not allowed");
+
+    // File size limit 413 - use actual large blob (19MB)
+    const fdBig = new FormData();
+    const bigBlob = new Blob([new Uint8Array(19 * 1024 * 1024)]);
+    fdBig.append("file", bigBlob, "big.txt");
+    const rBig = await callApi("/api/extract", { formData: fdBig });
+    ok(rBig.status === 413, "file larger than 18MB returns 413");
+
+    // Audio size limit 413
+    const fdBigAudio = new FormData();
+    const bigAudio = new Blob([new Uint8Array(19 * 1024 * 1024)], { type: "audio/wav" });
+    fdBigAudio.append("audio", bigAudio, "speech.wav");
+    const rBigAudio = await callApi("/api/transcribe", { formData: fdBigAudio });
+    ok(rBigAudio.status === 413, "audio larger than 18MB returns 413");
+
+    // Research empty query 400
+    const rEmpty = await callApi("/api/research", { body: { query: "" } });
+    ok(rEmpty.status === 400, "empty research query returns 400");
+  }
+
+  section("17 · v2.1 new features (title, version, URL normalization, etc.)");
+  {
+    // Health version 2.1 + features
+    const rHealth = await worker.fetch(new Request("http://test/api/health", { method: "GET" }), makeEnv({ GEMINI_API_KEY: KEYS.gemini }));
+    const jHealth = await rHealth.json();
+    ok(jHealth.version === 2.1 && jHealth.features?.title === true, "health reports version 2.1 with title feature");
+
+    // Title endpoint heuristic
+    const rTitle = await callApi("/api/title", { body: { messages: [{ role: "user", content: "Explain quantum computing in simple terms" }] } });
+    const jTitle = await rTitle.json();
+    ok(jTitle.title && jTitle.title.toLowerCase().includes("quantum"), "title endpoint generates heuristic title");
+
+    // Base URL normalization + shortModel + vision gating in one combined check
+    ok(normalizeBaseUrl("https://api.example.com/v1/") === "https://api.example.com/v1", "normalizeBaseUrl trims trailing slash");
+    ok(shortModel("") === "" && shortModel("accounts/fireworks/models/llama4-maverick-instruct-basic") === "llama4-maverick-instruct-basic", "shortModel handles empty and path stripping");
+
+    const groqVisionEntry = { provider: "groq", model: "meta-llama/llama-4-maverick-17b-128e-instruct" };
+    const groqNonVisionEntry = { provider: "groq", model: "llama-3.3-70b-versatile" };
+    ok(entryCan(groqVisionEntry, "vision") === true && entryCan(groqNonVisionEntry, "vision") === false, "visionOnly gating works for Groq");
   }
 } finally {
   globalThis.fetch = realFetch;

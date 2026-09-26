@@ -1,5 +1,6 @@
 /**
  * Legend Boy — AI assistant backend (Cloudflare Worker, works with almost any AI company)
+ * v2.1 — enhanced file support, security hardening, title generation, improved validation
  *
  * Cloudflare only HOSTS the app. All AI runs on the provider APIs with your own keys.
  * Keys can come from two places (both are tried in order, with automatic failover):
@@ -20,6 +21,7 @@
  *   POST /api/imagine      text → image (JSON {prompt})                      → JSON
  *   POST /api/verify       check one API key (JSON {key, provider?, base?})  → JSON
  *   POST /api/models       model list for the picker (JSON {provider, key?}) → JSON
+ *   POST /api/title        generate chat title from messages                 → JSON (v2.1)
  */
 
 import {
@@ -32,9 +34,42 @@ import {
 const MAX_HISTORY = 30;
 const MAX_FILE_CHARS = 60000;
 const MAX_MSG_CHARS = 20000;
+const MAX_TITLE_CHARS = 60;
 
 const ENV_IMAGE_MODEL = { gemini: "GEMINI_IMAGE_MODEL", openai: "OPENAI_IMAGE_MODEL", grok: "XAI_IMAGE_MODEL", together: "TOGETHER_IMAGE_MODEL" };
 const ENV_TTS_MODEL = { gemini: "GEMINI_TTS_MODEL", openai: "OPENAI_TTS_MODEL" };
+
+/* v2.1: simple in-memory rate limiter (per-IP, 120 req/min) — disabled in tests via env */
+const RATE_LIMIT_WINDOW = 60 * 1000;
+const RATE_LIMIT_MAX = 120;
+const rateMap = new Map();
+function checkRateLimit(request, env) {
+  if (env.DISABLE_RATE_LIMIT === "1" || env.MOCK_AI) return null;
+  const ip = request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for") || "unknown";
+  const now = Date.now();
+  const rec = rateMap.get(ip) || { count: 0, reset: now + RATE_LIMIT_WINDOW };
+  if (now > rec.reset) { rec.count = 0; rec.reset = now + RATE_LIMIT_WINDOW; }
+  rec.count++;
+  rateMap.set(ip, rec);
+  if (rec.count > RATE_LIMIT_MAX) {
+    return json({ error: "Too many requests — please slow down.", code: "RATE_LIMIT" }, 429);
+  }
+  return null;
+}
+
+/* v2.1: normalize base URL — trim trailing slashes, collapse double slashes */
+export function normalizeBaseUrl(url) {
+  if (!url) return "";
+  let u = String(url).trim().replace(/\/+$/, "");
+  // collapse accidental double slashes after protocol
+  u = u.replace(/([^:]\/)\/+/g, "$1");
+  return u;
+}
+
+/* v2.1: sanitize text for title generation */
+export function sanitizeForTitle(text) {
+  return String(text || "").replace(/\s+/g, " ").trim().slice(0, MAX_TITLE_CHARS);
+}
 
 /* ==================================================================== */
 /* Routing                                                               */
@@ -48,6 +83,12 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders() });
 
     try {
+      // v2.1: rate limiting check for all API routes
+      if (url.pathname.startsWith("/api/")) {
+        const limited = checkRateLimit(request, env);
+        if (limited) return limited;
+      }
+
       if (url.pathname === "/api/health") return health(env, request);
       if (!checkAccess(request, env)) return json({ error: "Access code required", code: "ACCESS_CODE" }, 401);
       if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -65,6 +106,7 @@ export default {
         case "/api/imagine": return await handleImagine(request, env, entries);
         case "/api/verify": return await handleVerify(request, env, entries);
         case "/api/models": return await handleModels(request, env, entries);
+        case "/api/title": return await handleTitle(request, env, entries);
         default: return json({ error: "Not found" }, 404);
       }
     } catch (err) {
@@ -104,14 +146,29 @@ function corsHeaders() {
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "GET,POST,OPTIONS",
     "access-control-allow-headers": "content-type,x-access-code,x-ai-keys,x-gemini-key",
+    "access-control-max-age": "86400",
+    "access-control-expose-headers": "content-type,x-ratelimit-remaining",
   };
 }
 
-function json(data, status = 200) {
+function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      ...corsHeaders(),
+      ...extraHeaders,
+    },
   });
+}
+
+/* v2.1: validate chat input */
+function validateChatInput(body) {
+  if (!body || typeof body !== "object") return "Invalid request body";
+  if (body.messages && !Array.isArray(body.messages)) return "messages must be an array";
+  if (body.messages && body.messages.length > 100) return "Too many messages";
+  return null;
 }
 
 function checkAccess(request, env) {
@@ -294,7 +351,8 @@ function health(env, request) {
   return json({
     ok: true,
     name: "Legend Boy",
-    version: 2,
+    version: 2.1,
+    versionString: "2.1.0",
     mock,
     keyConfigured: serverEntries.length > 0,
     appKeyAccepted: entries.some((e) => !e.server),
@@ -313,7 +371,67 @@ function health(env, request) {
     searchMode: selectChain(entries, { researchSearch: true })[0]
       ? (PROVIDER_BY_ID[selectChain(entries, { researchSearch: true })[0].provider].caps.search === "grounded" ? "google" : "perplexity")
       : "free",
+    features: {
+      title: true,
+      rateLimit: true,
+      fileTypes: ["txt", "md", "json", "csv", "html", "pdf", "docx", "xlsx", "pptx", "odt", "ods", "odp"],
+      maxFileSize: 18 * 1024 * 1024,
+      maxHistory: MAX_HISTORY,
+    },
+    limits: {
+      rateLimitMax: RATE_LIMIT_MAX,
+      rateLimitWindow: RATE_LIMIT_WINDOW,
+    },
   });
+}
+
+/* v2.1: POST /api/title — generate a short title from messages */
+async function handleTitle(request, env, entries) {
+  const body = await request.json().catch(() => ({}));
+  const msgs = Array.isArray(body.messages) ? body.messages : [];
+  if (!msgs.length) {
+    // also accept single text field for simplicity
+    const txt = String(body.text || body.query || "").trim();
+    if (txt) return json({ title: sanitizeForTitle(txt) || "New chat" });
+    return json({ error: "No messages provided" }, 400);
+  }
+
+  // heuristic: first user message truncated
+  const firstUser = msgs.find((m) => m.role === "user" && (m.content || m.text));
+  let heuristic = "";
+  if (firstUser) {
+    const raw = String(firstUser.content || firstUser.text || "").trim();
+    heuristic = sanitizeForTitle(raw) || "New chat";
+    // strip leading question words for brevity? keep simple
+    if (heuristic.length > 48) heuristic = heuristic.slice(0, 47) + "…";
+  } else {
+    heuristic = "New chat";
+  }
+
+  if (isMock(env)) {
+    return json({ title: heuristic, mock: true });
+  }
+
+  // If we have a key, try to generate a better title via AI, but fallback to heuristic
+  if (entries.length) {
+    try {
+      const prompt = `Generate a very short chat title (max 6 words, no quotes, no punctuation at end) for this conversation. First user message: "${heuristic.slice(0, 200)}". Output ONLY the title.`;
+      const chain = selectChain(entries, {});
+      for (const entry of chain) {
+        try {
+          const text = await generateOnce(entry, {
+            messages: [{ role: "user", text: prompt, images: [] }],
+            maxTokens: 20,
+            fast: true,
+          });
+          const aiTitle = sanitizeForTitle(text).replace(/^["']|["']$/g, "").slice(0, 48);
+          if (aiTitle && aiTitle.length >= 3) return json({ title: aiTitle, provider: entry.provider });
+        } catch {}
+      }
+    } catch {}
+  }
+
+  return json({ title: heuristic });
 }
 
 /* ==================================================================== */
@@ -401,7 +519,12 @@ function sseStream(run) {
     }
   })();
   return new Response(readable, {
-    headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", "x-accel-buffering": "no" },
+    headers: {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      "x-accel-buffering": "no",
+      ...corsHeaders(),
+    },
   });
 }
 
@@ -451,6 +574,11 @@ async function runChain(entries, args, send, { needs = {}, onEntry } = {}) {
 
 async function handleChat(request, env, entries) {
   const body = await request.json().catch(() => ({}));
+
+  // v2.1: input validation
+  const validationError = validateChatInput(body);
+  if (validationError) return json({ error: validationError }, 400);
+
   const voice = Boolean(body.voice);
   const messages = normalizeMessages(body.messages);
   const hasImages = messages.some((m) => m.images?.length);
