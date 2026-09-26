@@ -1,5 +1,5 @@
 // Legend Boy service worker — makes the app installable and load instantly.
-const VERSION = "lb-v2.1.1";
+const VERSION = "lb-v2.2.0";
 const SHELL = [
   "/", "/index.html", "/css/app.css",
   "/js/app.js", "/js/api.js", "/js/store.js", "/js/markdown.js", "/js/voice.js", "/js/camera.js", "/js/media.js", "/js/social.js",

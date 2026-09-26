@@ -450,6 +450,8 @@ function systemPrompt(userName) {
     `Today is ${todayString()}.`,
     name ? `The user's name is ${name}. Use it naturally now and then, not in every message.` : ``,
     `Abilities inside this app: chatting, seeing photos from the camera or gallery, reading files (PDF, Word, Excel, PowerPoint, text, code), deep web research with sources, creating images, and voice conversation.`,
+    `The app itself opens other apps when the user types or says something like "open whatsapp", "افتح واتساب" or "واتساب بکەرەوە" — that is handled on the phone before it reaches you, so never reply with instructions about it.`,
+    `If the user asks for a link or a number to reach someone, give a tappable one: WhatsApp https://wa.me/<number> (for Iraqi local numbers starting with 07, drop the 0 and add 964, digits only), Telegram https://t.me/<username>, Instagram https://instagram.com/<username>, YouTube search https://www.youtube.com/results?search_query=<words>.`,
     `When the user shares an image, look closely and describe or analyse exactly what is asked. When the user shares a file, its content is included between <<<FILE>>> markers — use it to answer.`,
     `Format with Markdown (short paragraphs, bullet lists, **bold** for key points, code blocks for code). For casual chat keep it short.`,
     `If something may have changed recently, say so and suggest using the Research tab.`,

@@ -6,7 +6,7 @@ import { renderMarkdown } from "./markdown.js";
 import { Recorder, Speaker, SentenceStream, unlockAudio, releaseMic } from "./voice.js";
 import { Camera, cameraErrorMessage } from "./camera.js";
 import * as media from "./media.js";
-import { runOpenCommand } from "./social.js";
+import { runOpenCommand, parseOpenCommand, appLabel } from "./social.js";
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -599,12 +599,15 @@ async function sendFromComposer(preset) {
   if (state.pending.some((p) => p.status === "loading")) return toast("Still reading your files… one sec");
   const ready = state.pending.filter((p) => p.status === "ready");
   if (!text.trim() && !ready.length) return;
-  // "/open whatsapp 9647… hi" · "/افتح يوتيوب …" → open the app directly (must run synchronously on the tap)
-  if (!ready.length && /^\/(open|افتح)\s/i.test(text.trim())) {
+  // "open whatsapp 9647… hi" · "افتح يوتيوب …" · "واتساب بکەرەوە" → open the app directly
+  // (the slash is optional now; must run synchronously on the tap so iOS allows the app switch)
+  const cmd = ready.length ? null : parseOpenCommand(text);
+  if (cmd) {
     input.value = "";
     input.style.height = "auto";
+    hideOpenChip();
     runOpenCommand(text);
-    return toast("Opening…", 1500);
+    return toast(cmd.app ? `Opening ${appLabel(cmd.app)}…` : "Opening…", 1500);
   }
   const images = ready.filter((p) => p.kind === "image").map((p) => p.dataUrl);
   const files = ready.filter((p) => p.kind !== "image").map((p) => ({ name: p.name, size: p.size, text: p.text }));
@@ -617,6 +620,35 @@ async function sendFromComposer(preset) {
   if (!q && images.length) q = "What's in this photo?";
   if (!q && files.length) q = "Summarise this file for me.";
   await sendMessage(q, { images, files });
+}
+
+/* ---------- "Open an app" helper (voice needs a tap on iOS) ---------- */
+// يفتح التطبيق فوراً، ويعرض زراً للمس كضمان إذا منع الآيفون الانتقال التلقائي
+let chipText = "";
+function openWithChip(text, app) {
+  chipText = text;
+  const chip = $("#openChip");
+  if (chip) {
+    chip.hidden = false;
+    chip.textContent = app ? `👆 Open ${appLabel(app)}` : "👆 Open";
+    chip.onclick = () => {
+      const t = chipText;
+      hideOpenChip();
+      if (t) runOpenCommand(t);
+    };
+    clearTimeout(openWithChip._t);
+    openWithChip._t = setTimeout(hideOpenChip, 25000);
+  }
+  vibrate(25);
+  runOpenCommand(text);
+}
+function hideOpenChip() {
+  clearTimeout(openWithChip._t);
+  const chip = $("#openChip");
+  if (chip) {
+    chip.hidden = true;
+    chip.onclick = null;
+  }
 }
 
 /* ---------- Dictation (mic in chat composer) ---------- */
@@ -638,6 +670,15 @@ async function dictate() {
     const { text } = await api.transcribe(rec.blob, rec.filename);
     setBusy(state.busy);
     if (!text) return toast("Couldn't understand, try again");
+    // Said "open whatsapp" / "افتح واتساب"? → open the app instead of typing it
+    const said = parseOpenCommand(text);
+    if (said) {
+      const box = $("#input");
+      box.value = text; // يبقى النص مكتوباً: لو منع الآيفون الفتح التلقائي، ضغطة إرسال تكفي
+      box.dispatchEvent(new Event("input"));
+      openWithChip(text, said.app);
+      return toast(said.app ? `Opening ${appLabel(said.app)}… tap ➤ if nothing happened` : "Opening…", 4000);
+    }
     const input = $("#input");
     input.value = (input.value ? input.value + " " : "") + text;
     input.dispatchEvent(new Event("input"));
@@ -753,6 +794,16 @@ async function startTalk() {
     if (!text.trim()) {
       $("#talkState").textContent = "Sorry, I missed that. Say it again?";
       continue;
+    }
+
+    // قال "افتح يوتيوب" / "واتساب بکەرەوە" بصوته؟ → نفتح التطبيق بدل ما نجاوب بالكلام
+    const voiceCmd = parseOpenCommand(text);
+    if (voiceCmd) {
+      $("#capUser").textContent = text;
+      $("#capBot").textContent = voiceCmd.app ? `⚡ Opening ${appLabel(voiceCmd.app)}…` : "⚡ Opening…";
+      stopTalk();
+      openWithChip(text, voiceCmd.app);
+      return;
     }
 
     $("#capUser").textContent = text;

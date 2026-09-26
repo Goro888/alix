@@ -234,6 +234,14 @@ body.kb-open .tabbar { display: none; }
 .talk-state { font-size: 17px; color: var(--muted); text-align: center; min-height: 1.4em; }
 .talk-captions { width: 100%; max-width: 560px; min-height: 90px; max-height: 32vh; overflow-y: auto; text-align: center; padding: 0 6px; }
 .talk-captions p { margin: 0 0 8px; line-height: 1.45; }
+/* زر يظهر بعد أمر صوتي: "افتـح واتسـاب" — لمسة واحدة تفتح التطبيق */
+.open-chip {
+  margin: 4px auto 0; display: inline-flex; align-items: center; gap: 8px;
+  padding: 11px 20px; border-radius: 999px; font-size: 16px; font-weight: 600; color: #fff;
+  background: var(--grad); box-shadow: 0 10px 30px -12px rgba(99,102,241,.9);
+  animation: pulse 1.6s infinite;
+}
+.open-chip:active { transform: scale(0.96); }
 .cap-user { color: var(--muted); font-size: 15px; }
 .cap-user:not(:empty)::before { content: "You: "; opacity: .7; }
 .cap-bot { font-size: 18px; font-weight: 500; }

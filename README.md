@@ -2,7 +2,7 @@
 
 Legend Boy is a mobile AI assistant. **Cloudflare only hosts it** (free). **All the AI runs on your own API key(s)** — and you're not locked to one company.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Goro888/Alixo)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Goro888/alix)
 
 ## Works with almost any AI company
 
@@ -51,7 +51,7 @@ Tap **Change ▾** under any key to search that company's **live model list**, o
 | **Research** | Gemini → **Google Search grounding** with numbered citations. Perplexity → its own live web search. Any other key → free web search. *Quick* and *Deep* modes |
 | **Create image** | Makes an image from words (Gemini "Nano Banana", OpenAI gpt-image, Grok, Together FLUX…) |
 | **Settings** | Keys & models, Legend Boy's photo, your name, voices, speech language (incl. Kurdish and Arabic), auto-read, greeting |
-| **Open apps** | Type `/open` (or `/افتح`) in chat to jump straight into another app: `/open whatsapp +9647701234567 hi`, `/open youtube funny cats`, `/open ig username`, `/open call 0770…`. Supports WhatsApp, Telegram, Signal, Viber, Messenger, SMS, Instagram, TikTok, YouTube, Snapchat, Facebook, X, Reddit, Pinterest, LinkedIn (Arabic names too). If an app isn't installed, it opens the website or App Store instead |
+| **Open apps** | Just say it or type it — no slash needed: **open whatsapp** · **افتح واتساب** · **واتساب بکەرەوە** · **یوتیوب ڤەکە** (also `/open`, `/افتح`). Works from chat, the mic and Talk mode. Add a target: *open whatsapp 07701234567 hi* (Iraqi numbers starting with 07 get **964** added automatically), *open instagram legend.boy*, *افتح اليوتيوب اغاني كردية*, *open call 0770…*. Supports WhatsApp, Telegram, Signal, Viber, Messenger, SMS, Instagram, TikTok, YouTube, Snapchat, Facebook, X, Reddit, Pinterest, LinkedIn, Google. If the app isn't installed it opens the website or App Store instead — and on iPhone, if Safari blocks the jump, a **tap-to-open button** appears |
 | **Install as app** | It's a PWA: "Add to Home Screen" gives it an icon and opens it full screen |
 
 ---
@@ -71,7 +71,7 @@ Tap **Change ▾** under any key to search that company's **live model list**, o
 
 **B. Connect this repo (works on a phone):**
 1. **dash.cloudflare.com → Workers & Pages → Create → Import a repository**
-2. Choose **Goro888/Alixo**, branch **main**. Leave **Build command** empty. **Deploy command:** `npm run deploy`
+2. Choose **Goro888/alix**, branch **main**. Leave **Build command** empty. **Deploy command:** `npm run deploy`
 3. Under **Build → Variables and secrets**, add your key(s) as **Secret** (e.g. `GEMINI_API_KEY`, `OPENAI_API_KEY`…)
 4. Tap **Deploy** — the deploy script saves every recognised key as a runtime **Secret**, even if you pasted it into a differently-named box.
 
@@ -115,8 +115,10 @@ npm install
 npm run dev:demo   # demo mode: fake AI answers, no key needed
 # real AI locally: copy .dev.vars.example to .dev.vars, paste any provider key (git-ignored), then:
 npm run dev
-# backend tests (fake provider APIs, no key needed):
+# backend tests (fake provider APIs, no key needed): 77 checks
 node scripts/test-multi.mjs
+# "open an app" commands, text + voice + Kurdish + phone numbers: 71 checks
+node scripts/test-open.mjs
 ```
 
 ## Project structure
@@ -128,12 +130,14 @@ src/worker.js           API routes: /api/chat, /api/research, /api/transcribe, /
                         /api/extract (incl. built-in PDF reader), /api/imagine, /api/verify, /api/models, /api/health
 scripts/deploy.mjs      `npm run deploy` — promotes any provider key from Build variables to Secrets
 scripts/test-multi.mjs  Backend test suite (fake Gemini/OpenAI/Anthropic APIs)
+scripts/test-open.mjs   App-open tests (English/Arabic/Kurdish, voice, 964 numbers)
 public/                 The phone app (no build step)
   index.html            Screens: splash, chat, talk, camera, files, research, settings + key/model/switcher sheets
   css/app.css           Mobile-first dark UI with safe-area support
   js/app.js             App logic (keys, models, quick switcher, streaming chat…)
   js/api.js, store.js   API client (x-ai-keys header) + local storage
   js/voice.js           Mic recording + auto-stop on silence + voice playback queue
+  js/social.js          App deep links + "open <app>" parser (text, voice, Arabic, Kurdish)
   js/camera.js, markdown.js, media.js
   sw.js, manifest.webmanifest   Installable PWA
   img/                  Legend Boy photo + app icons
