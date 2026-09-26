@@ -387,11 +387,26 @@ export function detectProvider(key) {
   return null;
 }
 
-/** Model id for display: keep last path segment, drop long date suffixes. */
+/** Model id for display: keep last path segment, drop long date suffixes. v2.1: handles more edge cases */
 export function shortModel(model) {
-  const m = String(model || "").split("/").pop() || "";
-  const short = m.replace(/-(\d{4})(\d{2})(\d{2})$/, "").replace(/-(\d{8})$/, "");
+  if (!model) return "";
+  const raw = String(model).trim();
+  if (!raw) return "";
+  const m = raw.split("/").pop() || "";
+  if (!m) return "";
+  // Remove date suffixes like -20240101 or -2024-01-01
+  let short = m.replace(/-(\d{4})(\d{2})(\d{2})$/, "").replace(/-(\d{8})$/, "").replace(/-\d{4}-\d{2}-\d{2}$/, "");
+  // Remove trailing version numbers that are just numbers
+  short = short.replace(/-v?\d+(\.\d+)*$/i, (match) => match.length > 8 ? "" : match);
   return short.length > 30 ? short.slice(0, 29) + "…" : short;
+}
+
+/** v2.1: normalize base URL — trim trailing slashes, handle empty */
+export function normalizeBaseUrl(url) {
+  if (!url) return "";
+  let u = String(url).trim().replace(/\/+$/, "");
+  u = u.replace(/([^:]\/)\/+/g, "$1");
+  return u;
 }
 
 /** Sensible model per entry: user choice → env override → provider default. */
@@ -399,14 +414,19 @@ export function chatModelOf(entry) {
   return entry.model || PROVIDER_BY_ID[entry.provider]?.defaults.chat || "";
 }
 
-/** Can this chain entry handle the given capability? */
+/** Can this chain entry handle the given capability? v2.1: improved visionOnly handling */
 export function entryCan(entry, cap) {
   const p = PROVIDER_BY_ID[entry.provider];
   if (!p) return false;
   if (cap === "chat") return true;
   if (cap === "vision") {
     if (!p.caps.vision) return false;
-    if (p.visionOnly && !p.visionOnly.test(chatModelOf(entry))) return false;
+    if (p.visionOnly) {
+      const model = chatModelOf(entry);
+      // If visionOnly regex exists, model must match; if no model, assume false for safety unless provider is vision-capable without filter
+      if (!model) return false;
+      if (!p.visionOnly.test(model)) return false;
+    }
     return true;
   }
   return Boolean(p.caps[cap === "researchSearch" ? "search" : cap]);
@@ -423,6 +443,7 @@ const NON_KEY_ENV = new Set([
   "GEMINI_MODEL", "OPENAI_MODEL", "ANTHROPIC_MODEL", "CLAUDE_MODEL", "OPENROUTER_MODEL", "GROQ_MODEL",
   "DEEPSEEK_MODEL", "XAI_MODEL", "MISTRAL_MODEL", "PERPLEXITY_MODEL", "TOGETHER_MODEL",
   "CEREBRAS_MODEL", "HUGGINGFACE_MODEL", "FIREWORKS_MODEL", "CUSTOM_MODEL",
+  "DISABLE_RATE_LIMIT", "RATE_LIMIT_MAX", "RATE_LIMIT_WINDOW",
 ]);
 
 function looksLikeAnyKey(v) {
@@ -447,12 +468,14 @@ export function buildEntries(env, appKeys = []) {
     if (key) seen.add(key);
     if (p.custom && !base) return;
     const envModel = server ? String(env[p.modelEnv] || "").trim() : "";
+    // v2.1: normalize base URLs to remove trailing slashes
+    const normalizedBase = normalizeBaseUrl(base) || normalizeBaseUrl(String(env[p.baseEnv] || "").trim()) || p.base;
     entries.push({
       id: `${p.id}#${entries.length}`,
       provider: p.id,
       key,
       model: model || envModel,
-      base: base || String(env[p.baseEnv] || "").trim() || p.base,
+      base: normalizedBase,
       server,
     });
   };
