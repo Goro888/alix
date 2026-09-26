@@ -9,7 +9,9 @@
     "dev:demo": "wrangler dev -c wrangler.demo.jsonc --ip 0.0.0.0",
     "deploy": "node scripts/deploy.mjs",
     "login": "wrangler login",
-    "check": "wrangler deploy --dry-run --outdir .wrangler/dry"
+    "check": "wrangler deploy --dry-run --outdir .wrangler/dry",
+    "test": "node scripts/test-multi.mjs && node scripts/test-open.mjs",
+    "test:open": "node scripts/test-open.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.139.0"
